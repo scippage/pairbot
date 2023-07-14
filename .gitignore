@@ -1,4 +1,5 @@
 __pycache__/
+nohup.out
 .env
 *.log
 *.db

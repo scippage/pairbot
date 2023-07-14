@@ -143,6 +143,17 @@ async def pairing_cron():
 async def pair(timeblock: Timeblock):
     try:
         userids = db.query_timeblock(timeblock)
+        if len(userids) < 2:
+            for userid in userids:
+                try:
+                    msg = f"Thanks for signing up for pairing this {timeblock}. \
+Unfortunately, there was nobody else available this time."
+                    channel = await client.get_user(userid).create_dm()
+                    await channel.send(msg)
+                except Exception as e:
+                    logger.error(e, exc_info=True)
+            return
+
         random.shuffle(userids)
         groups = [userids[i::len(userids)//2] for i in range(len(userids)//2)]
         channel = client.get_channel(CHANNEL_ID)
