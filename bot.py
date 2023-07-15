@@ -85,10 +85,11 @@ async def _subscribe(interaction: discord.Interaction, timeblock: Timeblock):
             f"You can call `/subscribe` again to sign up for more days."
         )
         await interaction.response.send_message(msg, ephemeral=True)
-    except sqlite3.IntegrityError:
+    except sqlite3.IntegrityError as e:
         logger.info(
             f"G:{interaction.guild_id} U:{interaction.user.id} failed subscribe T:{timeblock.name}."
         )
+        logger.warning(e, exc_info=True)
         msg = (
             f"You are already subscribed to {timeblock}. "
             f"Call `/unsubscribe` to remove a subscription or `/schedule` to view your schedule."
@@ -153,8 +154,12 @@ async def _unsubscribe_all(interaction: discord.Interaction):
 async def _schedule(interaction: discord.Interaction):
     try:
         timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
+        schedule = Timeblock.generate_schedule(timeblocks)
+        logger.info(
+            f"G:{interaction.guild_id} U:{interaction.user.id} queried schedule {schedule}."
+        )
         msg = (
-            f"Your current schedule is `{Timeblock.generate_schedule(timeblocks)}`. "
+            f"Your current schedule is `{schedule}`. "
             "You can call `/subscribe` or `/unsubscribe` to modify it."
         )
         await interaction.response.send_message(msg, ephemeral=True)
