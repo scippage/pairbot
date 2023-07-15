@@ -187,8 +187,18 @@ Unfortunately, there was nobody else available this time."
         logger.error(e, exc_info=True)
 
 
+def local_setup():
+    try:
+        with open(GUILDS_PATH, "r") as f:
+            json.load(f)
+    except:
+         with open(GUILDS_PATH, "w") as f:
+            json.dump({}, f)
+
+
 @client.event
 async def on_ready():
+    local_setup()
     await client.wait_until_ready()
     for guild in client.guilds:
         tree.copy_global_to(guild=guild)
