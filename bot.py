@@ -1,4 +1,5 @@
 import discord
+import json
 import logging
 import os
 import random
@@ -13,8 +14,7 @@ from db import Timeblock, DB
 
 load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-GUILD_ID = os.getenv('GUILD_ID')
-CHANNEL_ID = os.getenv('CHANNEL_ID')
+GUILDS_PATH = "guilds.json"
 DB_PATH = "pairing-prod.db"
 LOG_FILE = "pairing.log"
 SORRY = "Unexpected error."
@@ -30,7 +30,6 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 client = discord.Client(intents=intents)
-guild = discord.Object(id=GUILD_ID)
 tree = app_commands.CommandTree(client)
 db = DB(DB_PATH)
 
@@ -52,8 +51,8 @@ Matches go out at 8am UTC.")
 ])
 async def _subscribe(interaction: discord.Interaction, timeblock: Timeblock):
     try:
-        db.insert(interaction.user.id, timeblock)
-        timeblocks = db.query_userid(interaction.user.id)
+        db.insert(interaction.guild_id, interaction.user.id, timeblock)
+        timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
         msg = f"Your new schedule is `{Timeblock.generate_schedule(timeblocks)}`. \
 You can call `/subscribe` again to sign up for more days."
         await interaction.response.send_message(msg, ephemeral=True)
@@ -80,8 +79,8 @@ Call `/unsubscribe` to remove a subscription or `/schedule` to view your schedul
 ])
 async def _unsubscribe(interaction: discord.Interaction, timeblock: Timeblock):
     try:
-        db.delete(interaction.user.id, timeblock)
-        timeblocks = db.query_userid(interaction.user.id)
+        db.delete(interaction.guild_id, interaction.user.id, timeblock)
+        timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
         msg = f"Your new schedule is `{Timeblock.generate_schedule(timeblocks)}`."
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
@@ -92,7 +91,7 @@ async def _unsubscribe(interaction: discord.Interaction, timeblock: Timeblock):
 @tree.command(name="unsubscribe-all", description="Remove all timeblocks for pair programming.")
 async def _unsubscribe_all(interaction: discord.Interaction):
     try:
-        db.unsubscribe(interaction.user.id)
+        db.unsubscribe(interaction.guild_id, interaction.user.id)
         msg = f"Your pairing subscriptions have been removed. To rejoin, call `/subscribe` again."
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
@@ -103,9 +102,25 @@ async def _unsubscribe_all(interaction: discord.Interaction):
 @tree.command(name="schedule", description="View your pairing schedule.")
 async def _schedule(interaction: discord.Interaction):
     try:
-        timeblocks = db.query_userid(interaction.user.id)
+        timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
         msg = f"Your current schedule is `{Timeblock.generate_schedule(timeblocks)}`. \
 You can call `/subscribe` or `/unsubscribe` to modify it."
+        await interaction.response.send_message(msg, ephemeral=True)
+    except Exception as e:
+        logger.error(e, exc_info=True)
+        await interaction.response.send_message(SORRY, ephemeral=True)
+
+
+@tree.command(name="set-channel", description="Set a channel for bot messages (admin only).")
+@app_commands.checks.has_permissions(administrator=True)
+async def _set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    try:
+        with open(GUILDS_PATH, "r") as f:
+            guild_to_channel = json.load(f)
+            guild_to_channel[str(interaction.guild_id)] = channel.id
+        with open(GUILDS_PATH, "w") as f:
+            json.dump(guild_to_channel, f)
+        msg = f"Successfully set bot channel to `{channel.name}`."
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
         logger.error(e, exc_info=True)
@@ -133,16 +148,16 @@ async def pairing_cron():
             6: Timeblock.Sunday
         }
         timeblock = weekday_map[weekday]
-        await pair(timeblock)
+        for guild in client.guilds:
+            await pair(guild.id, timeblock)
+            # weekly Monday match
+            if weekday == 0:
+                await pair(guild.id, timeblock.WEEK)
 
-        # weekly Monday match
-        if weekday == 0:
-            await pair(timeblock.WEEK)
 
-
-async def pair(timeblock: Timeblock):
+async def pair(guild_id: int, timeblock: Timeblock):
     try:
-        userids = db.query_timeblock(timeblock)
+        userids = db.query_timeblock(guild_id, timeblock)
         if len(userids) < 2:
             for userid in userids:
                 try:
@@ -153,11 +168,12 @@ Unfortunately, there was nobody else available this time."
                 except Exception as e:
                     logger.error(e, exc_info=True)
             return
-
         random.shuffle(userids)
         groups = [userids[i::len(userids)//2] for i in range(len(userids)//2)]
-        channel = client.get_channel(CHANNEL_ID)
-        
+
+        with open(GUILDS_PATH, "r", encoding="utf-8") as f:
+            guild_to_channel = json.load(f)
+        channel = client.get_channel(guild_to_channel[str(guild_id)])
         await channel.send(f"Here are the pairings for this {timeblock}!")
         for group in groups:
             if len(group) == 2:
@@ -167,7 +183,7 @@ Unfortunately, there was nobody else available this time."
             else:
                 raise ValueError(f"Unexpected group length for: {group}")
             await channel.send(msg)
-        await channel.send(f"Please message each other and find some time to pair.")
+        await channel.send(f"Please message each other and find some time to pair. :computer:")
     except Exception as e:
         logger.error(e, exc_info=True)
 
@@ -175,8 +191,9 @@ Unfortunately, there was nobody else available this time."
 @client.event
 async def on_ready():
     await client.wait_until_ready()
-    tree.copy_global_to(guild=guild)
-    await tree.sync(guild=guild)
+    for guild in client.guilds:
+        tree.copy_global_to(guild=guild)
+        await tree.sync(guild=guild)
     print("Code sync complete!")
     pairing_cron.start()
     print("Starting cron loop...")

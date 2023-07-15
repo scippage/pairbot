@@ -1,5 +1,6 @@
 __pycache__/
 nohup.out
+guilds.json
 .env
 *.log
 *.db

@@ -31,32 +31,33 @@ class DB:
 
     def _setup(self) -> None:
         with closing(self.con.cursor()) as cur:
-            cur.execute("CREATE TABLE IF NOT EXISTS users (userid INTEGER, timeblock INTEGER, UNIQUE (userid, timeblock))")
+            cur.execute("""
+CREATE TABLE IF NOT EXISTS users (guildid INTEGER, userid INTEGER, timeblock INTEGER, UNIQUE (guildid, userid, timeblock))""")
             self.con.commit()
 
-    def insert(self, user_id: int, timeblock: Timeblock) -> None:
+    def insert(self, guild_id: int, user_id: int, timeblock: Timeblock) -> None:
         with closing(self.con.cursor()) as cur:
-            cur.execute("INSERT INTO users VALUES (?, ?)", (user_id, timeblock.value))
+            cur.execute("INSERT INTO users VALUES (?, ?, ?)", (guild_id, user_id, timeblock.value))
             self.con.commit()
 
-    def delete(self, user_id: int, timeblock: Timeblock) -> None:
+    def delete(self, guild_id: int, user_id: int, timeblock: Timeblock) -> None:
         with closing(self.con.cursor()) as cur:
-            cur.execute("DELETE from users WHERE userid=? and timeblock=?", (user_id, timeblock.value))
+            cur.execute("DELETE from users WHERE guildid=? and userid=? and timeblock=?", (guild_id, user_id, timeblock.value))
             self.con.commit()
 
-    def unsubscribe(self, userid: int) -> None:
+    def unsubscribe(self, guild_id: int, user_id: int) -> None:
         with closing(self.con.cursor()) as cur:
-            cur.execute("DELETE FROM users WHERE userid=?", (userid,))
+            cur.execute("DELETE FROM users WHERE guildid=? and userid=?", (guild_id, user_id))
             self.con.commit()
 
-    def query_timeblock(self, timeblock: Timeblock) -> List[int]:
+    def query_timeblock(self, guild_id: int, timeblock: Timeblock) -> List[int]:
         with closing(self.con.cursor()) as cur:
-            res = cur.execute("SELECT userid FROM users WHERE timeblock=?", (timeblock.value,))
+            res = cur.execute("SELECT userid FROM users WHERE guildid=? and timeblock=?", (guild_id, timeblock.value))
             userids = list(map(lambda x: x[0], res.fetchall()))
             return userids
         
-    def query_userid(self, userid: int) -> List[Timeblock]:
+    def query_userid(self, guild_id: int, user_id: int) -> List[Timeblock]:
         with closing(self.con.cursor()) as cur:
-            res = cur.execute("SELECT timeblock FROM users WHERE userid=?", (userid,))
+            res = cur.execute("SELECT timeblock FROM users WHERE guildid=? and userid=?", (guild_id, user_id))
             timeblocks = list(map(lambda x: Timeblock(x[0]), res.fetchall()))
             return timeblocks
