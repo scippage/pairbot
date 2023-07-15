@@ -34,6 +34,11 @@ tree = app_commands.CommandTree(client)
 db = DB(DB_PATH)
 
 
+def read_guild_to_channel():
+    with open(GUILDS_PATH, "r") as f:
+        return json.load(f)
+
+
 # Discord API currently doesn't support variadic arguments
 # https://github.com/discord/discord-api-docs/discussions/3286
 @tree.command(name="subscribe", description="Add timeblocks to find a partner for pair programming. \
@@ -115,13 +120,29 @@ You can call `/subscribe` or `/unsubscribe` to modify it."
 @app_commands.checks.has_permissions(administrator=True)
 async def _set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     try:
-        with open(GUILDS_PATH, "r") as f:
-            guild_to_channel = json.load(f)
-            guild_to_channel[str(interaction.guild_id)] = channel.id
+        guild_to_channel = read_guild_to_channel()
+        guild_to_channel[str(interaction.guild_id)] = channel.id
         with open(GUILDS_PATH, "w") as f:
             json.dump(guild_to_channel, f)
         msg = f"Successfully set bot channel to `{channel.name}`."
         await interaction.response.send_message(msg, ephemeral=True)
+    except Exception as e:
+        logger.error(e, exc_info=True)
+        await interaction.response.send_message(SORRY, ephemeral=True)
+
+
+@tree.command(name="pairwith", description="Start an immediate pairing session with another member.")
+async def _pairwith(interaction: discord.Interaction, user: discord.Member):
+    try:
+        guild_to_channel = read_guild_to_channel()
+        channel_id = guild_to_channel[str(interaction.guild_id)]
+        channel = client.get_channel(channel_id)
+        users = [interaction.user, user]
+        title = ", ".join(user.global_name for user in users)
+        msg = f"<@{interaction.user.id}> has started an on-demand pair with you, <@{user.id}>. Happy pairing! :computer:"
+        thread = await channel.create_thread(name=f"{title}", auto_archive_duration=10080)
+        await thread.send(msg)
+        await interaction.response.send_message(f"Thread with {user.global_name} created in channel `{channel.name}`.", ephemeral=True)
     except Exception as e:
         logger.error(e, exc_info=True)
         await interaction.response.send_message(SORRY, ephemeral=True)
@@ -177,8 +198,7 @@ Unfortunately, there was nobody else available this time."
                 except Exception as e:
                     logger.error(e, exc_info=True)
             return
-        with open(GUILDS_PATH, "r") as f:
-            guild_to_channel = json.load(f)
+        guild_to_channel = read_guild_to_channel()
         channel = client.get_channel(guild_to_channel[str(guild_id)])
 
         random.shuffle(userids)
@@ -198,8 +218,7 @@ Unfortunately, there was nobody else available this time."
 
 def local_setup():
     try:
-        with open(GUILDS_PATH, "r") as f:
-            json.load(f)
+        read_guild_to_channel()
     except:
          with open(GUILDS_PATH, "w") as f:
             json.dump({}, f)
