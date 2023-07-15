@@ -1,6 +1,9 @@
+*.pyc
 __pycache__/
-nohup.out
-guilds.json
-.env
+.vscode
+
+*.out
 *.log
-*.db
+
+.env
+data/
