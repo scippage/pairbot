@@ -127,6 +127,15 @@ async def _set_channel(interaction: discord.Interaction, channel: discord.TextCh
         await interaction.response.send_message(SORRY, ephemeral=True)
 
 
+async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CommandOnCooldown):
+        return await interaction.response.send_message(f"Command is currently on cooldown, try again in {error.retry_after:.2f} seconds.")
+    elif isinstance(error, app_commands.MissingPermissions):
+        return await interaction.response.send_message(f"You don't have the permissions to do that.")
+    else:
+        raise error
+
+
 @tasks.loop(hours = 1)
 async def pairing_cron():
     def should_run():
@@ -200,6 +209,7 @@ def local_setup():
 async def on_ready():
     local_setup()
     await client.wait_until_ready()
+    tree.on_error = on_tree_error
     for guild in client.guilds:
         tree.copy_global_to(guild=guild)
         await tree.sync(guild=guild)
