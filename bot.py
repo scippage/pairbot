@@ -4,6 +4,7 @@ import os
 import random
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import List
 
 import discord
@@ -15,10 +16,12 @@ from db import DB, Timeblock
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GUILDS_PATH = "data/guilds.json"
-DB_PATH = "data/pairing-prod.db"
+DATA_DIR = "data"
+GUILDS_PATH = f"{DATA_DIR}/guilds.json"
+DB_PATH = f"{DATA_DIR}/pairing-prod.db"
 LOG_FILE = "pairing.log"
 SORRY = "Unexpected error."
+Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     filename=LOG_FILE,
