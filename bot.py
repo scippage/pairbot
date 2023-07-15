@@ -182,7 +182,7 @@ async def pairing_cron():
             await pair(guild.id, timeblock)
             # weekly Monday match
             if weekday == 0:
-                await pair(guild.id, timeblock.WEEK)
+                await pair(guild.id, Timeblock.WEEK)
 
 
 async def pair(guild_id: int, timeblock: Timeblock):
