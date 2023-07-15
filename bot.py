@@ -168,22 +168,21 @@ Unfortunately, there was nobody else available this time."
                 except Exception as e:
                     logger.error(e, exc_info=True)
             return
-        random.shuffle(userids)
-        groups = [userids[i::len(userids)//2] for i in range(len(userids)//2)]
-
-        with open(GUILDS_PATH, "r", encoding="utf-8") as f:
+        with open(GUILDS_PATH, "r") as f:
             guild_to_channel = json.load(f)
         channel = client.get_channel(guild_to_channel[str(guild_id)])
-        await channel.send(f"Here are the pairings for this {timeblock}!")
+
+        random.shuffle(userids)
+        groups = [userids[i::len(userids)//2] for i in range(len(userids)//2)]
         for group in groups:
-            if len(group) == 2:
-                msg = f"<@{group[0]}> and <@{group[1]}>"
-            elif len(group) == 3:
-                msg = f"<@{group[0]}>, <@{group[1]}> and <@{group[2]}>"
-            else:
-                raise ValueError(f"Unexpected group length for: {group}")
-            await channel.send(msg)
-        await channel.send(f"Please message each other and find some time to pair. :computer:")
+            users = [client.get_user(userid) for userid in group]
+            title = ", ".join(user.global_name for user in users if user is not None)
+            msg = ", ".join(f"<@{user.id}>" for user in users if user is not None)
+            msg = f"{msg}: you've been matched together for this {timeblock}. Happy pairing! :computer:"
+            thread = await channel.create_thread(name=f"{title}", auto_archive_duration=10080)
+            # @ notifying users in a private thread invites them
+            await thread.send(msg)
+        await channel.send(f"Pairings have been sent out for this {timeblock}!")
     except Exception as e:
         logger.error(e, exc_info=True)
 
