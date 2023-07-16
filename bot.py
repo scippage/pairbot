@@ -242,6 +242,7 @@ async def create_group_thread(
     # so `notify_msg` must notify for this to work
     userids = [user.id for user in users]
     thread_id = pairings_db.query_userids(guild_id, userids)
+    thread = None
     if thread_id is not None:
         logger.debug(f"Found existing thread {thread_id} for G:{guild_id} U:{userids}")
         try:
@@ -250,7 +251,6 @@ async def create_group_thread(
         except discord.errors.NotFound:
             logger.debug(f"Couldn't fetch thread {thread_id}, maybe deleted?")
             pairings_db.delete(guild_id, userids, thread_id)
-            thread = None
     if thread is None:
         title = ", ".join(user.global_name for user in users)
         thread = await channel.create_thread(
