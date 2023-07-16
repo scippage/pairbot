@@ -311,7 +311,7 @@ async def pair(guild_id: int, timeblock: Timeblock):
         groups = [users[i :: len(users) // 2] for i in range(len(users) // 2)]
         for group in groups:
             notify_msg = ", ".join(f"<@{user.id}>" for user in users)
-            notify_msg = f"{msg}: you've been matched together for this {timeblock}. Happy pairing! :computer:"
+            notify_msg = f"{notify_msg}: you've been matched together for this {timeblock}. Happy pairing! :computer:"
             await create_group_thread(group, channel, notify_msg)
             logger.info(
                 f"G:{guild_id} C:{channel.id} paired U:{[user.id for user in users]}."
