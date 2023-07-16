@@ -95,32 +95,38 @@ class PairingsDB:
     def _setup(self) -> None:
         with closing(self.con.cursor()) as cur:
             cur.execute(
-                "CREATE TABLE IF NOT EXISTS pairings (guildid INTEGER, userids TEXT, threadid INTEGER, "
-                "UNIQUE (guildid, userids, threadid))"
+                "CREATE TABLE IF NOT EXISTS pairings (guildid INTEGER, userids TEXT, channelid INTEGER, "
+                "threadid INTEGER, UNIQUE (guildid, userids, channelid, threadid))"
             )
             self.con.commit()
 
-    def insert(self, guild_id: int, userids: List[int], threadid: int) -> None:
+    def insert(
+        self, guild_id: int, userids: List[int], channelid: int, threadid: int
+    ) -> None:
         with closing(self.con.cursor()) as cur:
             cur.execute(
-                "INSERT INTO pairings VALUES (?, ?, ?)",
-                (guild_id, PairingsDB._serialize_userids(userids), threadid),
+                "INSERT INTO pairings VALUES (?, ?, ?, ?)",
+                (guild_id, PairingsDB._serialize_userids(userids), channelid, threadid),
             )
             self.con.commit()
 
-    def delete(self, guild_id: int, userids: List[int], threadid: int) -> None:
+    def delete(
+        self, guild_id: int, userids: List[int], channelid: int, threadid: int
+    ) -> None:
         with closing(self.con.cursor()) as cur:
             cur.execute(
-                "DELETE from pairings WHERE guildid=? and userids=? and threadid=?",
-                (guild_id, PairingsDB._serialize_userids(userids), threadid),
+                "DELETE from pairings WHERE guildid=? and userids=? and channelid=? and threadid=?",
+                (guild_id, PairingsDB._serialize_userids(userids), channelid, threadid),
             )
             self.con.commit()
 
-    def query_userids(self, guild_id: int, userids: List[int]) -> Optional[int]:
+    def query_userids(
+        self, guild_id: int, userids: List[int], channelid: int
+    ) -> Optional[int]:
         with closing(self.con.cursor()) as cur:
             res = cur.execute(
-                "SELECT threadid FROM pairings WHERE guildid=? and userids=?",
-                (guild_id, PairingsDB._serialize_userids(userids)),
+                "SELECT threadid FROM pairings WHERE guildid=? and userids=? and channelid=?",
+                (guild_id, PairingsDB._serialize_userids(userids), channelid),
             )
             results = res.fetchall()
             if len(results) == 1:

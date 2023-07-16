@@ -241,7 +241,7 @@ async def create_group_thread(
     # @ notifying users in a private thread invites them
     # so `notify_msg` must notify for this to work
     userids = [user.id for user in users]
-    thread_id = pairings_db.query_userids(guild_id, userids)
+    thread_id = pairings_db.query_userids(guild_id, userids, channel.id)
     thread = None
     if thread_id is not None:
         logger.debug(f"Found existing thread {thread_id} for G:{guild_id} U:{userids}")
@@ -250,14 +250,14 @@ async def create_group_thread(
             thread = await guild.fetch_channel(thread_id)
         except discord.errors.NotFound:
             logger.debug(f"Couldn't fetch thread {thread_id}, maybe deleted?")
-            pairings_db.delete(guild_id, userids, thread_id)
+            pairings_db.delete(guild_id, userids, channel.id, thread_id)
     if thread is None:
         title = ", ".join(user.global_name for user in users)
         thread = await channel.create_thread(
             name=f"{title}", auto_archive_duration=10080
         )
         logger.debug(f"Created new thread {thread.id} for G:{guild_id} U:{userids}")
-        pairings_db.insert(guild_id, userids, thread.id)
+        pairings_db.insert(guild_id, userids, channel.id, thread.id)
     else:
         logger.debug(f"Found existing thread {thread_id} for G:{guild_id} U:{userids}")
         guild = client.get_guild(guild_id)
