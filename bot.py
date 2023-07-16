@@ -12,14 +12,27 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 
-from db import DB, Timeblock
+from db import PairingsDB, ScheduleDB, Timeblock
+from utils import parse_args, read_guild_to_channel
 
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATA_DIR = "data"
-GUILDS_PATH = f"{DATA_DIR}/guilds.json"
-DB_PATH = f"{DATA_DIR}/pairing-prod.db"
-LOG_FILE = "pairing.log"
+args = parse_args()
+if args.dev:
+    print("Running in dev mode.")
+    BOT_TOKEN = os.getenv("BOT_TOKEN_DEV")
+    DATA_DIR = "data"
+    GUILDS_PATH = f"{DATA_DIR}/guilds-dev.json"
+    SCHEDULE_DB_PATH = f"{DATA_DIR}/schedule-dev.db"
+    PAIRINGS_DB_PATH = f"{DATA_DIR}/pairings-dev.db"
+    LOG_FILE = "pairbot-dev.log"
+else:
+    print("Running in prod mode.")
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    DATA_DIR = "data"
+    GUILDS_PATH = f"{DATA_DIR}/guilds.json"
+    SCHEDULE_DB_PATH = f"{DATA_DIR}/schedule.db"
+    PAIRINGS_DB_PATH = f"{DATA_DIR}/pairings.db"
+    LOG_FILE = "pairbot.log"
 SORRY = "Unexpected error."
 Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -37,12 +50,8 @@ intents.members = True
 intents.message_content = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
-db = DB(DB_PATH)
-
-
-def read_guild_to_channel():
-    with open(GUILDS_PATH, "r") as f:
-        return json.load(f)
+db = ScheduleDB(SCHEDULE_DB_PATH)
+pairings_db = PairingsDB(PAIRINGS_DB_PATH)
 
 
 # Discord API currently doesn't support variadic arguments
@@ -174,7 +183,7 @@ async def _schedule(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(administrator=True)
 async def _set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     try:
-        guild_to_channel = read_guild_to_channel()
+        guild_to_channel = read_guild_to_channel(GUILDS_PATH)
         guild_to_channel[str(interaction.guild_id)] = channel.id
         with open(GUILDS_PATH, "w") as f:
             json.dump(guild_to_channel, f)
@@ -194,7 +203,7 @@ async def _set_channel(interaction: discord.Interaction, channel: discord.TextCh
 )
 async def _pairwith(interaction: discord.Interaction, user: discord.Member):
     try:
-        guild_to_channel = read_guild_to_channel()
+        guild_to_channel = read_guild_to_channel(GUILDS_PATH)
         channel_id = guild_to_channel[str(interaction.guild_id)]
         channel = client.get_channel(channel_id)
         users = [interaction.user, user]
@@ -202,7 +211,7 @@ async def _pairwith(interaction: discord.Interaction, user: discord.Member):
             f"<@{interaction.user.id}> has started an on-demand pair with you, <@{user.id}>. "
             "Happy pairing! :computer:"
         )
-        await create_group_thread(users, channel, notify_msg)
+        await create_group_thread(interaction.guild_id, users, channel, notify_msg)
         logger.info(
             f"G:{interaction.guild_id} C:{channel.id} on-demand paired U:{interaction.user.id} with {user.id}."
         )
@@ -224,18 +233,36 @@ async def dm_user(user: discord.User, msg: str):
 
 
 async def create_group_thread(
-    users: List[discord.User], channel: discord.TextChannel, notify_msg: str
+    guild_id: int,
+    users: List[discord.User],
+    channel: discord.TextChannel,
+    notify_msg: str,
 ):
     # @ notifying users in a private thread invites them
     # so `notify_msg` must notify for this to work
-    try:
+    userids = [user.id for user in users]
+    thread_id = pairings_db.query_userids(guild_id, userids)
+    if thread_id is not None:
+        logger.debug(f"Found existing thread {thread_id} for G:{guild_id} U:{userids}")
+        try:
+            guild = client.get_guild(guild_id)
+            thread = await guild.fetch_channel(thread_id)
+        except discord.errors.NotFound:
+            logger.debug(f"Couldn't fetch thread {thread_id}, maybe deleted?")
+            pairings_db.delete(guild_id, userids, thread_id)
+            thread = None
+    if thread is None:
         title = ", ".join(user.global_name for user in users)
         thread = await channel.create_thread(
             name=f"{title}", auto_archive_duration=10080
         )
-        await thread.send(notify_msg)
-    except Exception as e:
-        logger.error(e, exc_info=True)
+        logger.debug(f"Created new thread {thread.id} for G:{guild_id} U:{userids}")
+        pairings_db.insert(guild_id, userids, thread.id)
+    else:
+        logger.debug(f"Found existing thread {thread_id} for G:{guild_id} U:{userids}")
+        guild = client.get_guild(guild_id)
+        thread = await guild.fetch_channel(thread_id)
+    await thread.send(notify_msg)
 
 
 async def on_tree_error(
@@ -263,25 +290,29 @@ async def pairing_cron():
         return hour == 8
 
     if should_run():
-        now = datetime.utcnow()
-        print(now)
-        logger.debug(f"Running pairing job at UTC:{now}.")
-        weekday = now.weekday()
-        weekday_map = {
-            0: Timeblock.Monday,
-            1: Timeblock.Tuesday,
-            2: Timeblock.Wednesday,
-            3: Timeblock.Thursday,
-            4: Timeblock.Friday,
-            5: Timeblock.Saturday,
-            6: Timeblock.Sunday,
-        }
-        timeblock = weekday_map[weekday]
-        for guild in client.guilds:
-            await pair(guild.id, timeblock)
-            # weekly Monday match
-            if weekday == 0:
-                await pair(guild.id, Timeblock.WEEK)
+        await run_pairing()
+
+
+async def run_pairing():
+    now = datetime.utcnow()
+    print(now)
+    logger.debug(f"Running pairing job at UTC:{now}.")
+    weekday = now.weekday()
+    weekday_map = {
+        0: Timeblock.Monday,
+        1: Timeblock.Tuesday,
+        2: Timeblock.Wednesday,
+        3: Timeblock.Thursday,
+        4: Timeblock.Friday,
+        5: Timeblock.Saturday,
+        6: Timeblock.Sunday,
+    }
+    timeblock = weekday_map[weekday]
+    for guild in client.guilds:
+        await pair(guild.id, timeblock)
+        # weekly Monday match
+        if weekday == 0:
+            await pair(guild.id, Timeblock.WEEK)
 
 
 async def pair(guild_id: int, timeblock: Timeblock):
@@ -294,7 +325,8 @@ async def pair(guild_id: int, timeblock: Timeblock):
         logger.info(
             f"Pairing for G:{guild_id} T:{timeblock.name} with {len(users)}/{len(userids)} users."
         )
-
+        guild_to_channel = read_guild_to_channel(GUILDS_PATH)
+        channel = client.get_channel(guild_to_channel[str(guild_id)])
         if len(users) < 2:
             for user in users:
                 logger.info(
@@ -305,21 +337,22 @@ async def pair(guild_id: int, timeblock: Timeblock):
                     "Unfortunately, there was nobody else available this time."
                 )
                 await dm_user(user, msg)
+            await channel.send(
+                f"Not enough signups this {timeblock}. Try `/subscribe` to sign up!"
+            )
             return
-        guild_to_channel = read_guild_to_channel()
-        channel = client.get_channel(guild_to_channel[str(guild_id)])
 
         random.shuffle(users)
         groups = [users[i :: len(users) // 2] for i in range(len(users) // 2)]
         for group in groups:
             notify_msg = ", ".join(f"<@{user.id}>" for user in users)
             notify_msg = f"{notify_msg}: you've been matched together for this {timeblock}. Happy pairing! :computer:"
-            await create_group_thread(group, channel, notify_msg)
+            await create_group_thread(guild_id, group, channel, notify_msg)
             logger.info(
                 f"G:{guild_id} C:{channel.id} paired U:{[user.id for user in users]}."
             )
         await channel.send(
-            f"{len(groups)} pairing(s) have been sent out for this {timeblock}. Try `/subscribe` to sign up!"
+            f"Pairings for {len(users)} users have been sent out for this {timeblock}. Try `/subscribe` to sign up!"
         )
     except Exception as e:
         logger.error(e, exc_info=True)
@@ -327,7 +360,7 @@ async def pair(guild_id: int, timeblock: Timeblock):
 
 def local_setup():
     try:
-        read_guild_to_channel()
+        read_guild_to_channel(GUILDS_PATH)
     except Exception:
         with open(GUILDS_PATH, "w") as f:
             json.dump({}, f)
