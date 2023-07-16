@@ -317,7 +317,7 @@ async def pair(guild_id: int, timeblock: Timeblock):
                 f"G:{guild_id} C:{channel.id} paired U:{[user.id for user in users]}."
             )
         await channel.send(
-            f"It's 8am UTC: {len(groups)} pairing(s) have been sent out for this {timeblock}!"
+            f"{len(groups)} pairing(s) have been sent out for this {timeblock}. Try `/subscribe` to sign up!"
         )
     except Exception as e:
         logger.error(e, exc_info=True)
