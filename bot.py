@@ -259,11 +259,13 @@ async def pairing_cron():
     def should_run():
         now = datetime.utcnow()
         hour = now.time().hour
+        logger.debug(f"Checking pairing job at UTC:{now}.")
         return hour == 8
 
     if should_run():
         now = datetime.utcnow()
         print(now)
+        logger.debug(f"Running pairing job at UTC:{now}.")
         weekday = now.weekday()
         weekday_map = {
             0: Timeblock.Monday,
