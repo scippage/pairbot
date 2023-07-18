@@ -13,7 +13,7 @@ from discord.ext import tasks
 from dotenv import load_dotenv
 
 from db import PairingsDB, ScheduleDB, Timeblock
-from utils import parse_args, read_guild_to_channel
+from utils import get_user_name, parse_args, read_guild_to_channel
 
 load_dotenv()
 args = parse_args()
@@ -216,7 +216,7 @@ async def _pairwith(interaction: discord.Interaction, user: discord.Member):
             f"G:{interaction.guild_id} C:{channel.id} on-demand paired U:{interaction.user.id} with {user.id}."
         )
         await interaction.response.send_message(
-            f"Thread with {user.global_name} created in channel `{channel.name}`.",
+            f"Thread with {get_user_name(user)} created in channel `{channel.name}`.",
             ephemeral=True,
         )
     except Exception as e:
@@ -252,7 +252,7 @@ async def create_group_thread(
             logger.debug(f"Couldn't fetch thread {thread_id}, maybe deleted?")
             pairings_db.delete(guild_id, userids, channel.id, thread_id)
     if thread is None:
-        title = ", ".join(user.global_name for user in users)
+        title = ", ".join(get_user_name(user) for user in users)
         thread = await channel.create_thread(
             name=f"{title}", auto_archive_duration=10080
         )
