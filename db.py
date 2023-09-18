@@ -131,3 +131,39 @@ class PairingsDB:
             results = res.fetchall()
             if len(results) == 1:
                 return results[0][0]
+
+class LeetCodeDB:
+    def __init__(self, path: str) -> None:
+        self.db = path
+        self.con = sqlite3.connect(self.db)
+        self._setup()
+
+    def _setup(self) -> None:
+        with closing(self.con.cursor()) as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS leetcode (
+                    guild_id INTEGER,
+                    user_id INTEGER,
+                    difficulty TEXT,
+                    PRIMARY KEY (guild_id, user_id)
+                )
+                """
+            )
+            self.con.commit()
+
+    def insert(self, guild_id: int, user_id: int, difficulty: str) -> None:
+        with closing(self.con.cursor()) as cur:
+            cur.execute(
+                "INSERT OR REPLACE INTO leetcode (guild_id, user_id, difficulty) VALUES (?, ?, ?)",
+                (guild_id, user_id, difficulty),
+            )
+            self.con.commit()
+
+    def query_difficulty(self, guild_id: int, difficulty: str) -> List[int]:
+        with closing(self.con.cursor()) as cur:
+            res = cur.execute(
+                "SELECT user_id FROM leetcode WHERE guild_id = ? AND difficulty = ?",
+                (guild_id, difficulty),
+            )
+            return [row[0] for row in res.fetchall()]

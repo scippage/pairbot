@@ -1,5 +1,6 @@
 import argparse
 import json
+import random
 
 import discord
 
@@ -15,6 +16,20 @@ def read_guild_to_channel(path: str):
         return json.load(f)
 
 
+def load_leetcode_problems():
+    with open('Problems.json', 'r') as file:
+        return json.load(file)
+    
+    
+leetcode_problems = load_leetcode_problems()
+
+def get_random_leetcode_problem():
+    problem = random.choice(leetcode_problems)
+    return {
+        "title": problem["text"],
+        "url": problem["href"]
+    }
+    
 def get_user_name(user: discord.User):
     if user.global_name is not None:
         return user.global_name
