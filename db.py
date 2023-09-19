@@ -142,28 +142,48 @@ class LeetCodeDB:
         with closing(self.con.cursor()) as cur:
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS leetcode (
-                    guild_id INTEGER,
-                    user_id INTEGER,
-                    difficulty TEXT,
-                    PRIMARY KEY (guild_id, user_id)
-                )
+                CREATE TABLE IF NOT EXISTS leetcode (guildid INTEGER, userid INTEGER, timeblock INTEGER, 
+                difficulty TEXT, UNIQUE (guildid, userid, timeblock, difficulty))
                 """
             )
             self.con.commit()
 
-    def insert(self, guild_id: int, user_id: int, difficulty: str) -> None:
+    def insert(self, guild_id: int, user_id: int, timeblock: Timeblock, difficulty: str) -> None:
         with closing(self.con.cursor()) as cur:
             cur.execute(
-                "INSERT OR REPLACE INTO leetcode (guild_id, user_id, difficulty) VALUES (?, ?, ?)",
-                (guild_id, user_id, difficulty),
+                "INSERT INTO leetcode (guildid, userid, timeblock, difficulty) VALUES (?, ?, ?, ?)",
+                (guild_id, user_id, timeblock.value, difficulty),
             )
             self.con.commit()
 
-    def query_difficulty(self, guild_id: int, difficulty: str) -> List[int]:
+    def delete(self, guild_id: int, user_id: int, timeblock: Timeblock, difficulty: str) -> None:
+        with closing(self.con.cursor()) as cur:
+            cur.execute(
+                "DELETE FROM leetcode WHERE guildid=? AND userid=? AND timeblock=? AND difficulty=?",
+                (guild_id, user_id, timeblock.value, difficulty),
+            )
+            self.con.commit()
+
+    def unsubscribe(self, guild_id: int, user_id: int) -> None:
+        with closing(self.con.cursor()) as cur:
+            cur.execute(
+                "DELETE FROM leetcode WHERE guildid=? AND userid=?", (guild_id, user_id)
+            )
+            self.con.commit()
+
+    def query_timeblock_difficulty(self, guild_id: int, timeblock: Timeblock, difficulty: str) -> List[int]:
         with closing(self.con.cursor()) as cur:
             res = cur.execute(
-                "SELECT user_id FROM leetcode WHERE guild_id = ? AND difficulty = ?",
-                (guild_id, difficulty),
+                "SELECT userid FROM leetcode WHERE guildid=? AND timeblock=? AND difficulty=?",
+                (guild_id, timeblock.value, difficulty),
             )
             return [row[0] for row in res.fetchall()]
+
+    def query_userid(self, guild_id: int, user_id: int) -> List[tuple]:
+        with closing(self.con.cursor()) as cur:
+            res = cur.execute(
+                "SELECT timeblock, difficulty FROM leetcode WHERE guildid=? AND userid=?",
+                (guild_id, user_id),
+            )
+            return res.fetchall()
+

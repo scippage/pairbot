@@ -13,8 +13,7 @@ from discord.ext import tasks
 from dotenv import load_dotenv
 
 from db import PairingsDB, ScheduleDB, Timeblock, LeetCodeDB
-from utils import get_user_name, parse_args, read_guild_to_channel
-from utils import get_random_leetcode_problem
+from utils import get_user_name, parse_args, read_guild_to_channel, get_random_leetcode_problem
 
 load_dotenv()
 args = parse_args()
@@ -25,6 +24,7 @@ if args.dev:
     GUILDS_PATH = f"{DATA_DIR}/guilds-dev.json"
     SCHEDULE_DB_PATH = f"{DATA_DIR}/schedule-dev.db"
     PAIRINGS_DB_PATH = f"{DATA_DIR}/pairings-dev.db"
+    LEETCODE_DB_PATH = f"{DATA_DIR}/leetcode-dev.db"
     LOG_FILE = "pairbot-dev.log"
 else:
     print("Running in prod mode.")
@@ -33,6 +33,7 @@ else:
     GUILDS_PATH = f"{DATA_DIR}/guilds.json"
     SCHEDULE_DB_PATH = f"{DATA_DIR}/schedule.db"
     PAIRINGS_DB_PATH = f"{DATA_DIR}/pairings.db"
+    LEETCODE_DB_PATH = f"{DATA_DIR}/leetcode.db"
     LOG_FILE = "pairbot.log"
 SORRY = "Unexpected error."
 Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
@@ -53,13 +54,13 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 db = ScheduleDB(SCHEDULE_DB_PATH)
 pairings_db = PairingsDB(PAIRINGS_DB_PATH)
-leetcode_db = LeetCodeDB(f"{DATA_DIR}/leetcode-pairings.db")
+leetcode_db = LeetCodeDB(LEETCODE_DB_PATH)
 
 # Discord API currently doesn't support variadic arguments
 # https://github.com/discord/discord-api-docs/discussions/3286
 @tree.command(
-    name="leetcode",
-    description="Get a LeetCode problem based on the chosen difficulty."
+    name="leetcode", 
+    description="Get a random LeetCode problem based on difficulty."
 )
 @app_commands.describe(difficulty="Choose a difficulty level for the LeetCode problem.")
 @app_commands.choices(
@@ -67,20 +68,49 @@ leetcode_db = LeetCodeDB(f"{DATA_DIR}/leetcode-pairings.db")
         app_commands.Choice(name="Easy", value="Easy"),
         app_commands.Choice(name="Medium", value="Medium"),
         app_commands.Choice(name="Hard", value="Hard"),
-        app_commands.Choice(name="Any Difficulty", value="Any")
+        app_commands.Choice(name="Any difficulty", value="Any"),
     ]
 )
 async def _leetcode(interaction: discord.Interaction, difficulty: str):
     try:
-        # Store the user's difficulty choice in the database
-        leetcode_db.insert(interaction.guild_id, interaction.user.id, difficulty)
-        await interaction.response.send_message(
-            f"You've chosen {difficulty} difficulty. You'll be paired with someone who chose the same difficulty on Friday at 8am UTC.",
-            ephemeral=True
-        )
+        problem = get_random_leetcode_problem(difficulty)
+        message = f"Here's a {difficulty} LeetCode problem: {problem['title']} - {problem['url']}"
+        await interaction.response.send_message(message, ephemeral=True)
+    except Exception as e:
+        logger.error(f"Error fetching LeetCode problem: {e}", exc_info=True)
+        await interaction.response.send_message("Sorry, there was an error fetching the problem.", ephemeral=True)    
+
+@tree.command(
+    name="leetcode-subscribe",
+    description="Subscribe to receive a LeetCode problem based on timeblock and difficulty."
+)
+@app_commands.choices(
+    timeblock=[
+        app_commands.Choice(name=Timeblock.WEEK.name, value=Timeblock.WEEK.value),
+        app_commands.Choice(name=Timeblock.Monday.name, value=Timeblock.Monday.value),
+        app_commands.Choice(name=Timeblock.Tuesday.name, value=Timeblock.Tuesday.value),
+        app_commands.Choice(name=Timeblock.Wednesday.name, value=Timeblock.Wednesday.value),
+        app_commands.Choice(name=Timeblock.Thursday.name, value=Timeblock.Thursday.value),
+        app_commands.Choice(name=Timeblock.Friday.name, value=Timeblock.Friday.value),
+        app_commands.Choice(name=Timeblock.Saturday.name, value=Timeblock.Saturday.value),
+        app_commands.Choice(name=Timeblock.Sunday.name, value=Timeblock.Sunday.value),
+    ],
+    difficulty=[
+        app_commands.Choice(name="Easy", value="Easy"),
+        app_commands.Choice(name="Medium", value="Medium"),
+        app_commands.Choice(name="Hard", value="Hard"),
+        app_commands.Choice(name="Any difficulty", value="Any"),
+    ]
+)
+async def _leetcode_subscribe(interaction: discord.Interaction, timeblock: Timeblock, difficulty: str):
+    try:
+        leetcode_db.insert(interaction.guild_id, interaction.user.id, timeblock, difficulty)
+        await interaction.response.send_message(f"Subscribed to {timeblock} for {difficulty} problems!", ephemeral=True)
+    except sqlite3.IntegrityError:
+        await interaction.response.send_message("You're already subscribed to this timeblock and difficulty.", ephemeral=True)
     except Exception as e:
         logger.error(e, exc_info=True)
-        await interaction.response.send_message("Sorry, there was an error processing your request.", ephemeral=True)
+        await interaction.response.send_message(SORRY, ephemeral=True)
 
 @tree.command(
     name="subscribe",
@@ -95,16 +125,10 @@ Matches go out at 8am UTC that day.",
         app_commands.Choice(name=Timeblock.WEEK.name, value=Timeblock.WEEK.value),
         app_commands.Choice(name=Timeblock.Monday.name, value=Timeblock.Monday.value),
         app_commands.Choice(name=Timeblock.Tuesday.name, value=Timeblock.Tuesday.value),
-        app_commands.Choice(
-            name=Timeblock.Wednesday.name, value=Timeblock.Wednesday.value
-        ),
-        app_commands.Choice(
-            name=Timeblock.Thursday.name, value=Timeblock.Thursday.value
-        ),
+        app_commands.Choice(name=Timeblock.Wednesday.name, value=Timeblock.Wednesday.value),
+        app_commands.Choice(name=Timeblock.Thursday.name, value=Timeblock.Thursday.value),
         app_commands.Choice(name=Timeblock.Friday.name, value=Timeblock.Friday.value),
-        app_commands.Choice(
-            name=Timeblock.Saturday.name, value=Timeblock.Saturday.value
-        ),
+        app_commands.Choice(name=Timeblock.Saturday.name, value=Timeblock.Saturday.value),
         app_commands.Choice(name=Timeblock.Sunday.name, value=Timeblock.Sunday.value),
     ]
 )
@@ -167,6 +191,10 @@ async def _unsubscribe(interaction: discord.Interaction, timeblock: Timeblock):
     except Exception as e:
         logger.error(e, exc_info=True)
         await interaction.response.send_message(SORRY, ephemeral=True)
+    try:
+        leetcode_db.delete(interaction.guild_id, interaction.user.id, timeblock)
+    except Exception as e:
+        logger.error(e, exc_info=True)    
 
 
 @tree.command(
@@ -183,7 +211,10 @@ async def _unsubscribe_all(interaction: discord.Interaction):
     except Exception as e:
         logger.error(e, exc_info=True)
         await interaction.response.send_message(SORRY, ephemeral=True)
-
+    try:
+        leetcode_db.unsubscribe(interaction.guild_id, interaction.user.id)
+    except Exception as e:
+        logger.error(e, exc_info=True)
 
 @tree.command(name="schedule", description="View your pairing schedule.")
 async def _schedule(interaction: discord.Interaction):
@@ -309,14 +340,15 @@ async def on_tree_error(
 
 @tasks.loop(hours=1)
 async def pairing_cron():
-    now = datetime.utcnow()
     def should_run():
+        now = datetime.utcnow()
         hour = now.time().hour
         logger.debug(f"Checking pairing job at UTC:{now}.")
         return hour == 8
 
     if should_run():
         await run_pairing()
+
 
 async def run_pairing():
     now = datetime.utcnow()
@@ -334,21 +366,10 @@ async def run_pairing():
     }
     timeblock = weekday_map[weekday]
     for guild in client.guilds:
-        difficulties = ["Easy", "Medium", "Hard", "Any"]
-        for difficulty in difficulties:
-            users = leetcode_db.query_difficulty(guild.id, difficulty)
-            if len(users) >= 2:
-                # Pair users and assign a LeetCode problem
-                paired_users = random.sample(users, 2)
-                problem = get_random_leetcode_problem(difficulty)
-                notify_msg = (
-                    f"<@{paired_users[0]}> and <@{paired_users[1]}>: "
-                    f"You've been paired for a {difficulty} LeetCode problem this week: "
-                    f"[{problem['title']}]({problem['url']}). Happy coding!"
-                )
-                guild_to_channel = read_guild_to_channel(GUILDS_PATH)
-                channel = client.get_channel(guild_to_channel[str(guild.id)])
-                await channel.send(notify_msg)
+        await pair(guild.id, timeblock)
+        # weekly Monday match
+        if weekday == 0:
+            await pair(guild.id, Timeblock.WEEK)
 
 
 async def pair(guild_id: int, timeblock: Timeblock):

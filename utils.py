@@ -23,12 +23,29 @@ def load_leetcode_problems():
     
 leetcode_problems = load_leetcode_problems()
 
-def get_random_leetcode_problem():
-    problem = random.choice(leetcode_problems)
+def get_random_leetcode_problem(difficulty: str):
+    if difficulty == "Any difficulty":
+        problems_pool = leetcode_problems
+    else: 
+        problems_pool = [problem for problem in leetcode_problems if problem["difficulty"] == difficulty] 
+        
+        
+      # Log for debugging
+    print(f"Difficulty: {difficulty}")
+    print(f"Number of problems in pool: {len(problems_pool)}")
+
+    if not problems_pool:
+        raise ValueError(f"No problems found for difficulty: {difficulty}")
+     
+     
+     
+     
+         
+    selected_problem = random.choice(problems_pool)
     return {
-        "title": problem["text"],
-        "url": problem["href"]
-    }
+        "title": selected_problem["text"],
+        "url": selected_problem["href"]
+    }       
     
 def get_user_name(user: discord.User):
     if user.global_name is not None:
