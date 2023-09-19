@@ -84,6 +84,10 @@ async def _leetcode(interaction: discord.Interaction, difficulty: str):
     name="leetcode-subscribe",
     description="Subscribe to receive a LeetCode problem based on timeblock and difficulty."
 )
+@app_commands.describe(
+    timeblock="Choose WEEK to get a partner for the whole week (pairs announced Monday UTC).",
+    difficulty="Choose a difficulty level for the LeetCode problem."
+)
 @app_commands.choices(
     timeblock=[
         app_commands.Choice(name=Timeblock.WEEK.name, value=Timeblock.WEEK.value),
@@ -105,7 +109,7 @@ async def _leetcode(interaction: discord.Interaction, difficulty: str):
 async def _leetcode_subscribe(interaction: discord.Interaction, timeblock: Timeblock, difficulty: str):
     try:
         leetcode_db.insert(interaction.guild_id, interaction.user.id, timeblock, difficulty)
-        await interaction.response.send_message(f"Subscribed to {timeblock} for {difficulty} problems!", ephemeral=True)
+        await interaction.response.send_message(f"Subscribed to {timeblock} for {difficulty} problems! You can call `/leetcode-subscribe` again to sign up for more days.", ephemeral=True)
     except sqlite3.IntegrityError:
         await interaction.response.send_message("You're already subscribed to this timeblock and difficulty.", ephemeral=True)
     except Exception as e:
@@ -159,46 +163,39 @@ async def _subscribe(interaction: discord.Interaction, timeblock: Timeblock):
         await interaction.response.send_message(SORRY, ephemeral=True)
 
 
-@tree.command(name="unsubscribe", description="Remove timeblocks for pair programming.")
+@tree.command(name="unsubscribe", description="Remove timeblocks for pair programming and LeetCode problems.")
 @app_commands.describe(timeblock="Call `/unsubscribe-all` to remove all timeblocks.")
 @app_commands.choices(
     timeblock=[
         app_commands.Choice(name=Timeblock.WEEK.name, value=Timeblock.WEEK.value),
         app_commands.Choice(name=Timeblock.Monday.name, value=Timeblock.Monday.value),
         app_commands.Choice(name=Timeblock.Tuesday.name, value=Timeblock.Tuesday.value),
-        app_commands.Choice(
-            name=Timeblock.Wednesday.name, value=Timeblock.Wednesday.value
-        ),
-        app_commands.Choice(
-            name=Timeblock.Thursday.name, value=Timeblock.Thursday.value
-        ),
+        app_commands.Choice(name=Timeblock.Wednesday.name, value=Timeblock.Wednesday.value),
+        app_commands.Choice(name=Timeblock.Thursday.name, value=Timeblock.Thursday.value),
         app_commands.Choice(name=Timeblock.Friday.name, value=Timeblock.Friday.value),
-        app_commands.Choice(
-            name=Timeblock.Saturday.name, value=Timeblock.Saturday.value
-        ),
+        app_commands.Choice(name=Timeblock.Saturday.name, value=Timeblock.Saturday.value),
         app_commands.Choice(name=Timeblock.Sunday.name, value=Timeblock.Sunday.value),
     ]
 )
 async def _unsubscribe(interaction: discord.Interaction, timeblock: Timeblock):
     try:
         db.delete(interaction.guild_id, interaction.user.id, timeblock)
-        timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
         logger.info(
             f"G:{interaction.guild_id} U:{interaction.user.id} unsubscribed T:{timeblock.name}."
         )
+        leetcode_db.delete(interaction.guild_id, interaction.user.id, timeblock)
+        logger.info(
+            f"G:{interaction.guild_id} U:{interaction.user.id} unsubscribed from LeetCode T:{timeblock.name}."
+        )
+        timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
         msg = f"Your new schedule is `{Timeblock.generate_schedule(timeblocks)}`."
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
         logger.error(e, exc_info=True)
-        await interaction.response.send_message(SORRY, ephemeral=True)
-    try:
-        leetcode_db.delete(interaction.guild_id, interaction.user.id, timeblock)
-    except Exception as e:
-        logger.error(e, exc_info=True)    
-
+        await interaction.response.send_message(SORRY, ephemeral=True)  
 
 @tree.command(
-    name="unsubscribe-all", description="Remove all timeblocks for pair programming."
+    name="unsubscribe-all", description="Remove all timeblocks for pair programming and LeetCode problems."
 )
 async def _unsubscribe_all(interaction: discord.Interaction):
     try:
@@ -206,7 +203,7 @@ async def _unsubscribe_all(interaction: discord.Interaction):
         logger.info(
             f"G:{interaction.guild_id} U:{interaction.user.id} called unsubscribe-all."
         )
-        msg = "Your pairing subscriptions have been removed. To rejoin, call `/subscribe` again."
+        msg = "Your pairing subscriptions have been removed. To rejoin, call `/subscribe` or /leetcode-subscribe again."
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
         logger.error(e, exc_info=True)
@@ -219,20 +216,26 @@ async def _unsubscribe_all(interaction: discord.Interaction):
 @tree.command(name="schedule", description="View your pairing schedule.")
 async def _schedule(interaction: discord.Interaction):
     try:
-        timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
-        schedule = Timeblock.generate_schedule(timeblocks)
+        pairing_timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
+        pairing_schedule = Timeblock.generate_schedule(pairing_timeblocks)
+        
+        leetcode_timeblocks_tuples = leetcode_db.query_userid(interaction.guild_id, interaction.user.id)
+        leetcode_schedule_list = [f"{Timeblock(item[0]).name} ({item[1]})" for item in leetcode_timeblocks_tuples]
+        #leetcode_timeblocks = [Timeblock(item[0]) for item in leetcode_timeblocks_tuples]
+        leetcode_schedule = ', '.join(leetcode_schedule_list)
+
         logger.info(
-            f"G:{interaction.guild_id} U:{interaction.user.id} queried schedule {schedule}."
+            f"G:{interaction.guild_id} U:{interaction.user.id} pairing schedule {pairing_schedule} and LeetCode schedule {leetcode_schedule}."
         )
         msg = (
-            f"Your current schedule is `{schedule}`. "
-            "You can call `/subscribe` or `/unsubscribe` to modify it."
+            f"Your current pairing schedule is `{pairing_schedule}` .\n"
+            f"Your LeetCode schedule is `{leetcode_schedule}`.\n "
+            "You can call `/subscribe`, `/leetcode-subscribe` or `/unsubscribe` to modify it."
         )
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
         logger.error(e, exc_info=True)
         await interaction.response.send_message(SORRY, ephemeral=True)
-
 
 @tree.command(
     name="set-channel", description="Set a channel for bot messages (admin only)."

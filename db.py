@@ -156,11 +156,11 @@ class LeetCodeDB:
             )
             self.con.commit()
 
-    def delete(self, guild_id: int, user_id: int, timeblock: Timeblock, difficulty: str) -> None:
+    def delete(self, guild_id: int, user_id: int, timeblock: Timeblock) -> None:
         with closing(self.con.cursor()) as cur:
             cur.execute(
-                "DELETE FROM leetcode WHERE guildid=? AND userid=? AND timeblock=? AND difficulty=?",
-                (guild_id, user_id, timeblock.value, difficulty),
+                "DELETE FROM leetcode WHERE guildid=? AND userid=? AND timeblock=?",
+                (guild_id, user_id, timeblock.value),
             )
             self.con.commit()
 
@@ -186,4 +186,3 @@ class LeetCodeDB:
                 (guild_id, user_id),
             )
             return res.fetchall()
-
