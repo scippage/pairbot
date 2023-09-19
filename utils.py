@@ -24,7 +24,7 @@ def load_leetcode_problems():
 leetcode_problems = load_leetcode_problems()
 
 def get_random_leetcode_problem(difficulty: str):
-    if difficulty == "Any difficulty":
+    if difficulty == "Any":
         problems_pool = leetcode_problems
     else: 
         problems_pool = [problem for problem in leetcode_problems if problem["difficulty"] == difficulty] 
