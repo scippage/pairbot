@@ -21,6 +21,12 @@ class Timeblock(Enum):
     def generate_schedule(timeblocks: List["Timeblock"]) -> str:
         return f"{[str(block) for block in sorted(timeblocks, key=lambda block: block.value)]}"
 
+    def generate_leetcode_schedule(tuples: List[tuple]) -> str:
+        sorted_tuples = sorted(tuples, key=lambda tuple: (tuple[0].value, tuple[1]))
+        return ", ".join(
+            [f"{Timeblock(item[0]).name} ({item[1]})" for item in sorted_tuples]
+        )
+
 
 class ScheduleDB:
     def __init__(self, path: str) -> None:
@@ -132,6 +138,7 @@ class PairingsDB:
             if len(results) == 1:
                 return results[0][0]
 
+
 class LeetCodeDB:
     def __init__(self, path: str) -> None:
         self.db = path
@@ -148,7 +155,9 @@ class LeetCodeDB:
             )
             self.con.commit()
 
-    def insert(self, guild_id: int, user_id: int, timeblock: Timeblock, difficulty: str) -> None:
+    def insert(
+        self, guild_id: int, user_id: int, timeblock: Timeblock, difficulty: str
+    ) -> None:
         with closing(self.con.cursor()) as cur:
             cur.execute(
                 "INSERT INTO leetcode (guildid, userid, timeblock, difficulty) VALUES (?, ?, ?, ?)",
@@ -171,7 +180,9 @@ class LeetCodeDB:
             )
             self.con.commit()
 
-    def query_timeblock_difficulty(self, guild_id: int, timeblock: Timeblock, difficulty: str) -> List[int]:
+    def query_timeblock_difficulty(
+        self, guild_id: int, timeblock: Timeblock, difficulty: str
+    ) -> List[int]:
         with closing(self.con.cursor()) as cur:
             res = cur.execute(
                 "SELECT userid FROM leetcode WHERE guildid=? AND timeblock=? AND difficulty=?",
