@@ -187,8 +187,18 @@ async def _unsubscribe(interaction: discord.Interaction, timeblock: Timeblock):
         logger.info(
             f"G:{interaction.guild_id} U:{interaction.user.id} unsubscribed from LeetCode T:{timeblock.name}."
         )
-        timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
-        msg = f"Your new schedule is `{Timeblock.generate_schedule(timeblocks)}`."
+        pairing_timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
+        pairing_schedule = Timeblock.generate_schedule(pairing_timeblocks)
+        
+        leetcode_timeblocks_tuples = leetcode_db.query_userid(interaction.guild_id, interaction.user.id)
+        leetcode_schedule_list = [f"{Timeblock(item[0]).name} ({item[1]})" for item in leetcode_timeblocks_tuples]
+        leetcode_schedule = ', '.join(leetcode_schedule_list)
+
+        #timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
+        msg = (
+            f"Your new pairing schedule is `{pairing_schedule}`.\n"
+            f"Your new LeetCode schedule is `{leetcode_schedule}`."
+        )
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
         logger.error(e, exc_info=True)
