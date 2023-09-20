@@ -194,7 +194,6 @@ async def _unsubscribe(interaction: discord.Interaction, timeblock: Timeblock):
         leetcode_schedule_list = [f"{Timeblock(item[0]).name} ({item[1]})" for item in leetcode_timeblocks_tuples]
         leetcode_schedule = ', '.join(leetcode_schedule_list)
 
-        #timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
         msg = (
             f"Your new pairing schedule is `{pairing_schedule}`.\n"
             f"Your new LeetCode schedule is `{leetcode_schedule}`."
@@ -213,7 +212,7 @@ async def _unsubscribe_all(interaction: discord.Interaction):
         logger.info(
             f"G:{interaction.guild_id} U:{interaction.user.id} called unsubscribe-all."
         )
-        msg = "Your pairing subscriptions have been removed. To rejoin, call `/subscribe` or /leetcode-subscribe again."
+        msg = "Your pairing subscriptions have been removed. To rejoin, call `/subscribe` or `/leetcode-subscribe` again."
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
         logger.error(e, exc_info=True)
