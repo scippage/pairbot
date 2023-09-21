@@ -22,7 +22,9 @@ class Timeblock(Enum):
         return f"{[str(block) for block in sorted(timeblocks, key=lambda block: block.value)]}"
 
     def generate_leetcode_schedule(tuples: List[tuple]) -> str:
-        sorted_tuples = sorted(tuples, key=lambda tuple: (tuple[0].value, tuple[1]))
+        sorted_tuples = sorted(
+            tuples, key=lambda tuple: (Timeblock(tuple[0]).value, tuple[1])
+        )
         return ", ".join(
             [f"{Timeblock(item[0]).name} ({item[1]})" for item in sorted_tuples]
         )

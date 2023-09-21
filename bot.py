@@ -197,7 +197,10 @@ async def _subscribe(interaction: discord.Interaction, timeblock: Timeblock):
     name="unsubscribe",
     description="Remove timeblocks for pair programming and LeetCode problems.",
 )
-@app_commands.describe(timeblock="Call `/unsubscribe-all` to remove all timeblocks.")
+@app_commands.describe(
+    timeblock="Calll `/unsubscribe-all` to remove all timeblocks.",
+    subscription="Subscription type",
+)
 @app_commands.choices(
     timeblock=[
         app_commands.Choice(name=Timeblock.WEEK.name, value=Timeblock.WEEK.value),
@@ -215,24 +218,24 @@ async def _subscribe(interaction: discord.Interaction, timeblock: Timeblock):
         ),
         app_commands.Choice(name=Timeblock.Sunday.name, value=Timeblock.Sunday.value),
     ],
-    subscription_type=[
+    subscription=[
         app_commands.Choice(name="Pair Programming", value="Programming"),
-        app_commands.Choice(name="LeetCode", value="LeetCode"),
+        app_commands.Choice(name="Leetcode", value="Leetcode"),
         app_commands.Choice(name="All", value="All"),
     ],
 )
 async def _unsubscribe(
     interaction: discord.Interaction,
     timeblock: Timeblock,
-    subscription_type: str = "All",
+    subscription: str = "All",
 ):
     try:
-        if subscription_type in ["Programming", "All"]:
+        if subscription in ["Programming", "All"]:
             db.delete(interaction.guild_id, interaction.user.id, timeblock)
             logger.info(
                 f"G:{interaction.guild_id} U:{interaction.user.id} unsubscribed T:{timeblock.name}."
             )
-        if subscription_type in ["Leetcode", "All"]:
+        if subscription in ["Leetcode", "All"]:
             leetcode_db.delete(interaction.guild_id, interaction.user.id, timeblock)
             logger.info(
                 f"G:{interaction.guild_id} U:{interaction.user.id} unsubscribed from LeetCode T:{timeblock.name}."
@@ -253,6 +256,8 @@ async def _unsubscribe(
         )
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
+        # error_msg = str(e)
+        # logger.error(f"Error in _unsubscribe: {error_msg}", exc_info=True)
         logger.error(e, exc_info=True)
         await interaction.response.send_message(SORRY, ephemeral=True)
 
@@ -453,9 +458,26 @@ async def pair(guild_id: int, timeblock: Timeblock):
         # Users may leave the server without unsubscribing
         # TODO: listen to that event and drop them from the table
         users = list(filter(None, users))
-        logger.info(
-            f"Pairing for G:{guild_id} T:{timeblock.name} with {len(users)}/{len(userids)} users."
-        )
+        await process_pairings(guild_id, users, timeblock, is_leetcode=False)
+
+        for difficulty in ["Easy", "Medium", "Hard"]:
+            leetcode_userids = leetcode_db.query_timeblock_difficulty(
+                guild_id, timeblock, difficulty
+            )
+            leetcode_users = [client.get_user(userid) for userid in leetcode_userids]
+            leetcode_users = list(filter(None, leetcode_users))
+            await process_pairings(
+                guild_id,
+                leetcode_users,
+                timeblock,
+                is_leetcode=True,
+                difficulty=difficulty,
+            )
+        # logger.info(f"Pairing for G:{guild_id} T:{timeblock.name} with {len(users)}/{len(userids)} users.")
+
+    except Exception as e:
+        logger.error(e, exc_info=True)
+
         guild_to_channel = read_guild_to_channel(GUILDS_PATH)
         channel = client.get_channel(guild_to_channel[str(guild_id)])
         if len(users) < 2:
@@ -473,20 +495,51 @@ async def pair(guild_id: int, timeblock: Timeblock):
             )
             return
 
-        random.shuffle(users)
-        groups = [users[i :: len(users) // 2] for i in range(len(users) // 2)]
-        for group in groups:
-            notify_msg = ", ".join(f"<@{user.id}>" for user in group)
-            notify_msg = f"{notify_msg}: you've been matched together for this {timeblock}. Happy pairing! :computer:"
-            await create_group_thread(guild_id, group, channel, notify_msg)
+
+async def process_pairings(
+    guild_id: int,
+    users: List[discord.User],
+    timeblock: Timeblock,
+    is_leetcode: bool,
+    difficulty: str = None,
+):
+    guild_to_channel = read_guild_to_channel(GUILDS_PATH)
+    channel = client.get_channel(guild_to_channel[str(guild_id)])
+
+    if len(users) < 2:
+        for user in users:
             logger.info(
-                f"G:{guild_id} C:{channel.id} paired U:{[user.id for user in group]}."
+                f"G:{guild_id} T:{timeblock.name} pair failed, dming U:{user.id}."
             )
+            msg = (
+                f"Thanks for signing up for pairing this {timeblock}. "
+                "Unfortunately, there was nobody else available this time."
+            )
+            await dm_user(user, msg)
         await channel.send(
-            f"Pairings for {len(users)} users have been sent out for this {timeblock}. Try `/subscribe` to sign up!"
+            f"Not enough signups this {timeblock}. Try `/subscribe` or `/leetcode-subscribe` to sign up."
         )
-    except Exception as e:
-        logger.error(e, exc_info=True)
+        return
+
+    random.shuffle(users)
+    groups = [users[i :: len(users) // 2] for i in range(len(users) // 2)]
+    for group in groups:
+        if is_leetcode:
+            problem = get_random_leetcode_problem(difficulty)
+            notify_msg = ", ".join(f"<@{user.id}>" for user in group)
+            notify_msg += f": you've been matched together for this {timeblock} using `/leetcode-subscribe` to solve {problem['title']} - {problem['url']}. Happy coding!"
+        else:
+            notify_msg = ", ".join(f"<@{user.id}>" for user in group)
+            notify_msg += f": you've been matched together for this {timeblock} using `/subscribe`. Happy pairing! :computer:"
+
+        await create_group_thread(guild_id, group, channel, notify_msg)
+        logger.info(
+            f"G:{guild_id} C:{channel.id} paired U:{[user.id for user in group]} for {'/leetcode-subscribe' if is_leetcode else '/subscribe'}."
+        )
+
+    await channel.send(
+        f"Pairings for {len(users)} users have been sent out for this {timeblock} using {'/leetcode-subscribe' if is_leetcode else '/subscribe'}."
+    )
 
 
 def local_setup():
