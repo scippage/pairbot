@@ -5,7 +5,7 @@ import random
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import discord
 from db import LeetCodeDB, PairingsDB, ScheduleDB, Timeblock
@@ -198,7 +198,7 @@ async def _subscribe(interaction: discord.Interaction, timeblock: Timeblock):
     description="Remove timeblocks for pair programming and LeetCode problems.",
 )
 @app_commands.describe(
-    timeblock="Calll `/unsubscribe-all` to remove all timeblocks.",
+    timeblock="Call `/unsubscribe-all` to remove all timeblocks.",
     subscription="Subscription type",
 )
 @app_commands.choices(
@@ -227,7 +227,7 @@ async def _subscribe(interaction: discord.Interaction, timeblock: Timeblock):
 async def _unsubscribe(
     interaction: discord.Interaction,
     timeblock: Timeblock,
-    subscription: str = "All",
+    subscription: Optional[str] = "All",
 ):
     try:
         if subscription in ["Programming", "All"]:
@@ -256,8 +256,6 @@ async def _unsubscribe(
         )
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
-        # error_msg = str(e)
-        # logger.error(f"Error in _unsubscribe: {error_msg}", exc_info=True)
         logger.error(e, exc_info=True)
         await interaction.response.send_message(SORRY, ephemeral=True)
 
@@ -269,6 +267,7 @@ async def _unsubscribe(
 async def _unsubscribe_all(interaction: discord.Interaction):
     try:
         db.unsubscribe(interaction.guild_id, interaction.user.id)
+        leetcode_db.unsubscribe(interaction.guild_id, interaction.user.id)
         logger.info(
             f"G:{interaction.guild_id} U:{interaction.user.id} called unsubscribe-all."
         )
@@ -277,10 +276,6 @@ async def _unsubscribe_all(interaction: discord.Interaction):
     except Exception as e:
         logger.error(e, exc_info=True)
         await interaction.response.send_message(SORRY, ephemeral=True)
-    try:
-        leetcode_db.unsubscribe(interaction.guild_id, interaction.user.id)
-    except Exception as e:
-        logger.error(e, exc_info=True)
 
 
 @tree.command(name="schedule", description="View your pairing schedule.")
@@ -303,8 +298,8 @@ async def _schedule(interaction: discord.Interaction):
             f"G:{interaction.guild_id} U:{interaction.user.id} pairing schedule {pairing_schedule} and LeetCode schedule {leetcode_schedule}."
         )
         msg = (
-            f"Your current pairing schedule is `{pairing_schedule}` .\n"
-            f"Your LeetCode schedule is `{leetcode_schedule}`.\n "
+            f"Your current pairing schedule is `{pairing_schedule}`.\n"
+            f"Your LeetCode schedule is `{leetcode_schedule}`.\n"
             "You can call `/subscribe`, `/leetcode-subscribe` or `/unsubscribe` to modify it."
         )
         await interaction.response.send_message(msg, ephemeral=True)
@@ -473,27 +468,9 @@ async def pair(guild_id: int, timeblock: Timeblock):
                 is_leetcode=True,
                 difficulty=difficulty,
             )
-        # logger.info(f"Pairing for G:{guild_id} T:{timeblock.name} with {len(users)}/{len(userids)} users.")
 
     except Exception as e:
         logger.error(e, exc_info=True)
-
-        guild_to_channel = read_guild_to_channel(GUILDS_PATH)
-        channel = client.get_channel(guild_to_channel[str(guild_id)])
-        if len(users) < 2:
-            for user in users:
-                logger.info(
-                    f"G:{guild_id} T:{timeblock.name} pair failed, dming U:{user.id}."
-                )
-                msg = (
-                    f"Thanks for signing up for pairing this {timeblock}. "
-                    "Unfortunately, there was nobody else available this time."
-                )
-                await dm_user(user, msg)
-            await channel.send(
-                f"Not enough signups this {timeblock}. Try `/subscribe` to sign up!"
-            )
-            return
 
 
 async def process_pairings(
