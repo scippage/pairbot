@@ -21,6 +21,24 @@ class Timeblock(Enum):
     def generate_schedule(timeblocks: List["Timeblock"]) -> str:
         return f"{[str(block) for block in sorted(timeblocks, key=lambda block: block.value)]}"
 
+    def generate_leetcode_schedule(tuples: List[tuple]) -> str:
+        sorted_tuples = sorted(
+            tuples, key=lambda tuple: (Timeblock(tuple[0]).value, tuple[1])
+        )
+        return ", ".join(
+            [f"{Timeblock(item[0]).name} ({item[1]})" for item in sorted_tuples]
+        )
+
+
+class LeetcodeDifficulty(Enum):
+    Easy = "Easy"
+    Medium = "Medium"
+    Hard = "Hard"
+    Any = "Any Difficulty"
+
+    def __str__(self):
+        return self.name
+
 
 class ScheduleDB:
     def __init__(self, path: str) -> None:
@@ -131,3 +149,63 @@ class PairingsDB:
             results = res.fetchall()
             if len(results) == 1:
                 return results[0][0]
+
+
+class LeetCodeDB:
+    def __init__(self, path: str) -> None:
+        self.db = path
+        self.con = sqlite3.connect(self.db)
+        self._setup()
+
+    def _setup(self) -> None:
+        with closing(self.con.cursor()) as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS leetcode (guildid INTEGER, userid INTEGER, timeblock INTEGER, 
+                difficulty TEXT, UNIQUE (guildid, userid, timeblock, difficulty))
+                """
+            )
+            self.con.commit()
+
+    def insert(
+        self, guild_id: int, user_id: int, timeblock: Timeblock, difficulty: str
+    ) -> None:
+        with closing(self.con.cursor()) as cur:
+            cur.execute(
+                "INSERT INTO leetcode (guildid, userid, timeblock, difficulty) VALUES (?, ?, ?, ?)",
+                (guild_id, user_id, timeblock.value, difficulty),
+            )
+            self.con.commit()
+
+    def delete(self, guild_id: int, user_id: int, timeblock: Timeblock) -> None:
+        with closing(self.con.cursor()) as cur:
+            cur.execute(
+                "DELETE FROM leetcode WHERE guildid=? AND userid=? AND timeblock=?",
+                (guild_id, user_id, timeblock.value),
+            )
+            self.con.commit()
+
+    def unsubscribe(self, guild_id: int, user_id: int) -> None:
+        with closing(self.con.cursor()) as cur:
+            cur.execute(
+                "DELETE FROM leetcode WHERE guildid=? AND userid=?", (guild_id, user_id)
+            )
+            self.con.commit()
+
+    def query_timeblock_difficulty(
+        self, guild_id: int, timeblock: Timeblock, difficulty: str
+    ) -> List[int]:
+        with closing(self.con.cursor()) as cur:
+            res = cur.execute(
+                "SELECT userid FROM leetcode WHERE guildid=? AND timeblock=? AND difficulty=?",
+                (guild_id, timeblock.value, difficulty),
+            )
+            return [row[0] for row in res.fetchall()]
+
+    def query_userid(self, guild_id: int, user_id: int) -> List[tuple]:
+        with closing(self.con.cursor()) as cur:
+            res = cur.execute(
+                "SELECT timeblock, difficulty FROM leetcode WHERE guildid=? AND userid=?",
+                (guild_id, user_id),
+            )
+            return res.fetchall()

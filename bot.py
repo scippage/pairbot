@@ -3,17 +3,22 @@ import logging
 import os
 import random
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import discord
+from db import LeetCodeDB, LeetcodeDifficulty, PairingsDB, ScheduleDB, Timeblock
 from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
-
-from db import PairingsDB, ScheduleDB, Timeblock
-from utils import get_user_name, parse_args, read_guild_to_channel
+from utils import (
+    get_random_leetcode_problem,
+    get_user_name,
+    parse_args,
+    read_guild_to_channel,
+)
 
 load_dotenv()
 args = parse_args()
@@ -24,6 +29,7 @@ if args.dev:
     GUILDS_PATH = f"{DATA_DIR}/guilds-dev.json"
     SCHEDULE_DB_PATH = f"{DATA_DIR}/schedule-dev.db"
     PAIRINGS_DB_PATH = f"{DATA_DIR}/pairings-dev.db"
+    LEETCODE_DB_PATH = f"{DATA_DIR}/leetcode-dev.db"
     LOG_FILE = "pairbot-dev.log"
 else:
     print("Running in prod mode.")
@@ -32,6 +38,7 @@ else:
     GUILDS_PATH = f"{DATA_DIR}/guilds.json"
     SCHEDULE_DB_PATH = f"{DATA_DIR}/schedule.db"
     PAIRINGS_DB_PATH = f"{DATA_DIR}/pairings.db"
+    LEETCODE_DB_PATH = f"{DATA_DIR}/leetcode.db"
     LOG_FILE = "pairbot.log"
 SORRY = "Unexpected error."
 Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
@@ -52,12 +59,106 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 db = ScheduleDB(SCHEDULE_DB_PATH)
 pairings_db = PairingsDB(PAIRINGS_DB_PATH)
+leetcode_db = LeetCodeDB(LEETCODE_DB_PATH)
 
 
 # Discord API currently doesn't support variadic arguments
 # https://github.com/discord/discord-api-docs/discussions/3286
 @tree.command(
-    name="subscribe",
+    name="leetcode", description="Get a random LeetCode problem based on difficulty."
+)
+@app_commands.describe(difficulty="Choose a difficulty level for the LeetCode problem.")
+@app_commands.choices(
+    difficulty=[
+        app_commands.Choice(
+            name=LeetcodeDifficulty.Easy.name, value=LeetcodeDifficulty.Easy.value
+        ),
+        app_commands.Choice(
+            name=LeetcodeDifficulty.Medium.name, value=LeetcodeDifficulty.Medium.value
+        ),
+        app_commands.Choice(
+            name=LeetcodeDifficulty.Hard.name, value=LeetcodeDifficulty.Hard.value
+        ),
+        app_commands.Choice(
+            name=LeetcodeDifficulty.Any.name, value=LeetcodeDifficulty.Any.value
+        ),
+    ]
+)
+async def _leetcode(interaction: discord.Interaction, difficulty: str):
+    try:
+        problem = get_random_leetcode_problem(difficulty)
+        message = f"Here's a {difficulty} LeetCode problem: {problem['title']} - {problem['url']}"
+        await interaction.response.send_message(message, ephemeral=True)
+    except Exception as e:
+        logger.error(f"Error fetching LeetCode problem: {e}", exc_info=True)
+        await interaction.response.send_message(
+            "Sorry, there was an error fetching the problem.", ephemeral=True
+        )
+
+
+@tree.command(
+    name="leetcode-subscribe",
+    description="Subscribe to receive a LeetCode problem based on timeblock and difficulty.",
+)
+@app_commands.describe(
+    timeblock="Choose WEEK to get a partner for the whole week (pairs announced Monday UTC).",
+    difficulty="Choose a difficulty level for the LeetCode problem.",
+)
+@app_commands.choices(
+    timeblock=[
+        app_commands.Choice(name=Timeblock.WEEK.name, value=Timeblock.WEEK.value),
+        app_commands.Choice(name=Timeblock.Monday.name, value=Timeblock.Monday.value),
+        app_commands.Choice(name=Timeblock.Tuesday.name, value=Timeblock.Tuesday.value),
+        app_commands.Choice(
+            name=Timeblock.Wednesday.name, value=Timeblock.Wednesday.value
+        ),
+        app_commands.Choice(
+            name=Timeblock.Thursday.name, value=Timeblock.Thursday.value
+        ),
+        app_commands.Choice(name=Timeblock.Friday.name, value=Timeblock.Friday.value),
+        app_commands.Choice(
+            name=Timeblock.Saturday.name, value=Timeblock.Saturday.value
+        ),
+        app_commands.Choice(name=Timeblock.Sunday.name, value=Timeblock.Sunday.value),
+    ],
+    difficulty=[
+        app_commands.Choice(
+            name=LeetcodeDifficulty.Easy.name, value=LeetcodeDifficulty.Easy.value
+        ),
+        app_commands.Choice(
+            name=LeetcodeDifficulty.Medium.name, value=LeetcodeDifficulty.Medium.value
+        ),
+        app_commands.Choice(
+            name=LeetcodeDifficulty.Hard.name, value=LeetcodeDifficulty.Hard.value
+        ),
+        app_commands.Choice(
+            name=LeetcodeDifficulty.Any.name, value=LeetcodeDifficulty.Any.value
+        ),
+    ],
+)
+async def _leetcode_subscribe(
+    interaction: discord.Interaction, timeblock: Timeblock, difficulty: str
+):
+    try:
+        leetcode_db.insert(
+            interaction.guild_id, interaction.user.id, timeblock, difficulty
+        )
+        await interaction.response.send_message(
+            f"Subscribed to {timeblock} for {difficulty} problems! You can call `/leetcode-subscribe` again to sign up for more days.",
+            ephemeral=True,
+        )
+    except sqlite3.IntegrityError:
+        await interaction.response.send_message(
+            "You're already subscribed to this timeblock and difficulty.",
+            ephemeral=True,
+        )
+    except Exception as e:
+        logger.error(e, exc_info=True)
+        await interaction.response.send_message(SORRY, ephemeral=True)
+
+
+@tree.command(
+    name="pairing-subscribe",
     description="Add timeblocks to find a partner for pair programming. \
 Matches go out at 8am UTC that day.",
 )
@@ -82,7 +183,7 @@ Matches go out at 8am UTC that day.",
         app_commands.Choice(name=Timeblock.Sunday.name, value=Timeblock.Sunday.value),
     ]
 )
-async def _subscribe(interaction: discord.Interaction, timeblock: Timeblock):
+async def _pairing_subscribe(interaction: discord.Interaction, timeblock: Timeblock):
     try:
         db.insert(interaction.guild_id, interaction.user.id, timeblock)
         timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
@@ -91,7 +192,7 @@ async def _subscribe(interaction: discord.Interaction, timeblock: Timeblock):
         )
         msg = (
             f"Your new schedule is `{Timeblock.generate_schedule(timeblocks)}`. "
-            f"You can call `/subscribe` again to sign up for more days."
+            f"You can call `/pairing-subscribe` again to sign up for more days."
         )
         await interaction.response.send_message(msg, ephemeral=True)
     except sqlite3.IntegrityError as e:
@@ -109,8 +210,14 @@ async def _subscribe(interaction: discord.Interaction, timeblock: Timeblock):
         await interaction.response.send_message(SORRY, ephemeral=True)
 
 
-@tree.command(name="unsubscribe", description="Remove timeblocks for pair programming.")
-@app_commands.describe(timeblock="Call `/unsubscribe-all` to remove all timeblocks.")
+@tree.command(
+    name="unsubscribe",
+    description="Remove timeblocks for pair programming and LeetCode problems.",
+)
+@app_commands.describe(
+    timeblock="Call `/unsubscribe-all` to remove all timeblocks.",
+    subscription="Subscription type",
+)
 @app_commands.choices(
     timeblock=[
         app_commands.Choice(name=Timeblock.WEEK.name, value=Timeblock.WEEK.value),
@@ -127,16 +234,43 @@ async def _subscribe(interaction: discord.Interaction, timeblock: Timeblock):
             name=Timeblock.Saturday.name, value=Timeblock.Saturday.value
         ),
         app_commands.Choice(name=Timeblock.Sunday.name, value=Timeblock.Sunday.value),
-    ]
+    ],
+    subscription=[
+        app_commands.Choice(name="Pairing", value="pairing-subscribe"),
+        app_commands.Choice(name="Leetcode", value="leetcode-subscribe"),
+        app_commands.Choice(name="All", value="All"),
+    ],
 )
-async def _unsubscribe(interaction: discord.Interaction, timeblock: Timeblock):
+async def _unsubscribe(
+    interaction: discord.Interaction,
+    timeblock: Timeblock,
+    subscription: Optional[str] = "All",
+):
     try:
-        db.delete(interaction.guild_id, interaction.user.id, timeblock)
-        timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
-        logger.info(
-            f"G:{interaction.guild_id} U:{interaction.user.id} unsubscribed T:{timeblock.name}."
+        if subscription in ["pairing-subscribe", "All"]:
+            db.delete(interaction.guild_id, interaction.user.id, timeblock)
+            logger.info(
+                f"G:{interaction.guild_id} U:{interaction.user.id} unsubscribed T:{timeblock.name}."
+            )
+        if subscription in ["leetcode-subscribe", "All"]:
+            leetcode_db.delete(interaction.guild_id, interaction.user.id, timeblock)
+            logger.info(
+                f"G:{interaction.guild_id} U:{interaction.user.id} unsubscribed from LeetCode T:{timeblock.name}."
+            )
+        pairing_timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
+        pairing_schedule = Timeblock.generate_schedule(pairing_timeblocks)
+
+        leetcode_timeblocks_tuples = leetcode_db.query_userid(
+            interaction.guild_id, interaction.user.id
         )
-        msg = f"Your new schedule is `{Timeblock.generate_schedule(timeblocks)}`."
+        leetcode_schedule = Timeblock.generate_leetcode_schedule(
+            leetcode_timeblocks_tuples
+        )
+
+        msg = (
+            f"Your new pairing schedule is `{pairing_schedule}`.\n"
+            f"Your new LeetCode schedule is `{leetcode_schedule}`."
+        )
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
         logger.error(e, exc_info=True)
@@ -144,15 +278,17 @@ async def _unsubscribe(interaction: discord.Interaction, timeblock: Timeblock):
 
 
 @tree.command(
-    name="unsubscribe-all", description="Remove all timeblocks for pair programming."
+    name="unsubscribe-all",
+    description="Remove all timeblocks for pair programming and LeetCode problems.",
 )
 async def _unsubscribe_all(interaction: discord.Interaction):
     try:
         db.unsubscribe(interaction.guild_id, interaction.user.id)
+        leetcode_db.unsubscribe(interaction.guild_id, interaction.user.id)
         logger.info(
             f"G:{interaction.guild_id} U:{interaction.user.id} called unsubscribe-all."
         )
-        msg = "Your pairing subscriptions have been removed. To rejoin, call `/subscribe` again."
+        msg = "Your pairing subscriptions have been removed. To rejoin, call `/pairing-subscribe` or `/leetcode-subscribe` again."
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
         logger.error(e, exc_info=True)
@@ -162,14 +298,26 @@ async def _unsubscribe_all(interaction: discord.Interaction):
 @tree.command(name="schedule", description="View your pairing schedule.")
 async def _schedule(interaction: discord.Interaction):
     try:
-        timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
-        schedule = Timeblock.generate_schedule(timeblocks)
+        pairing_timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
+        pairing_schedule = Timeblock.generate_schedule(pairing_timeblocks)
+
+        leetcode_timeblocks_tuples = leetcode_db.query_userid(
+            interaction.guild_id, interaction.user.id
+        )
+        leetcode_schedule_list = [
+            f"{Timeblock(item[0]).name} ({item[1]})"
+            for item in leetcode_timeblocks_tuples
+        ]
+        # leetcode_timeblocks = [Timeblock(item[0]) for item in leetcode_timeblocks_tuples]
+        leetcode_schedule = ", ".join(leetcode_schedule_list) or []
+
         logger.info(
-            f"G:{interaction.guild_id} U:{interaction.user.id} queried schedule {schedule}."
+            f"G:{interaction.guild_id} U:{interaction.user.id} pairing schedule {pairing_schedule} and LeetCode schedule {leetcode_schedule}."
         )
         msg = (
-            f"Your current schedule is `{schedule}`. "
-            "You can call `/subscribe` or `/unsubscribe` to modify it."
+            f"Your current pairing schedule is `{pairing_schedule}`.\n"
+            f"Your LeetCode schedule is `{leetcode_schedule}`.\n"
+            "You can call `/pairing-subscribe`, `/leetcode-subscribe` or `/unsubscribe` to modify it."
         )
         await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
@@ -281,6 +429,20 @@ async def on_tree_error(
         raise error
 
 
+async def distribute_any_users(difficulty_users_dict, any_users):
+    # First, ensure all bins have an even number of users
+    for difficulty in ["Easy", "Medium", "Hard"]:
+        while len(difficulty_users_dict[difficulty]) % 2 != 0 and any_users:
+            difficulty_users_dict[difficulty].append(any_users.pop())
+
+    # Randomly distribute the remaining "Any" users
+    while any_users:
+        chosen_difficulty = random.choice(["Easy", "Medium", "Hard"])
+        difficulty_users_dict[chosen_difficulty].append(any_users.pop())
+
+    return difficulty_users_dict
+
+
 @tasks.loop(hours=1)
 async def pairing_cron():
     def should_run():
@@ -317,45 +479,101 @@ async def run_pairing():
 
 async def pair(guild_id: int, timeblock: Timeblock):
     try:
+        # General pairings
         userids = db.query_timeblock(guild_id, timeblock)
         users = [client.get_user(userid) for userid in userids]
         # Users may leave the server without unsubscribing
         # TODO: listen to that event and drop them from the table
         users = list(filter(None, users))
-        logger.info(
-            f"Pairing for G:{guild_id} T:{timeblock.name} with {len(users)}/{len(userids)} users."
-        )
-        guild_to_channel = read_guild_to_channel(GUILDS_PATH)
-        channel = client.get_channel(guild_to_channel[str(guild_id)])
-        if len(users) < 2:
-            for user in users:
-                logger.info(
-                    f"G:{guild_id} T:{timeblock.name} pair failed, dming U:{user.id}."
-                )
-                msg = (
-                    f"Thanks for signing up for pairing this {timeblock}. "
-                    "Unfortunately, there was nobody else available this time."
-                )
-                await dm_user(user, msg)
-            await channel.send(
-                f"Not enough signups this {timeblock}. Try `/subscribe` to sign up!"
-            )
-            return
+        await process_pairings(guild_id, users, timeblock, is_leetcode=False)
 
-        random.shuffle(users)
-        groups = [users[i :: len(users) // 2] for i in range(len(users) // 2)]
-        for group in groups:
-            notify_msg = ", ".join(f"<@{user.id}>" for user in group)
-            notify_msg = f"{notify_msg}: you've been matched together for this {timeblock}. Happy pairing! :computer:"
-            await create_group_thread(guild_id, group, channel, notify_msg)
-            logger.info(
-                f"G:{guild_id} C:{channel.id} paired U:{[user.id for user in group]}."
+        # Fetch all leetcode subscribers for the timeblock
+        all_leetcode_users = {}
+        with closing(leetcode_db.con.cursor()) as cur:
+            res = cur.execute(
+                "SELECT userid, difficulty FROM leetcode WHERE guildid=? AND timeblock=?",
+                (guild_id, timeblock.value),
             )
-        await channel.send(
-            f"Pairings for {len(users)} users have been sent out for this {timeblock}. Try `/subscribe` to sign up!"
+            for row in res.fetchall():
+                user_id, difficulty = row
+                if difficulty not in all_leetcode_users:
+                    all_leetcode_users[difficulty] = []
+                all_leetcode_users[difficulty].append(client.get_user(user_id))
+
+        any_users = all_leetcode_users.get("Any Difficulty", [])
+        difficulty_users_dict = {
+            "Easy": all_leetcode_users.get("Easy", []),
+            "Medium": all_leetcode_users.get("Medium", []),
+            "Hard": all_leetcode_users.get("Hard", []),
+        }
+
+        for difficulty, users_list in difficulty_users_dict.items():
+            while any_users and len(users_list) % 2 != 0:
+                users_list.append(any_users.pop())
+
+        # Process pairings for each difficulty
+        for difficulty in LeetcodeDifficulty:
+            if difficulty.name != "Any":
+                await process_pairings(
+                    guild_id,
+                    # all_leetcode_users[difficulty.name],
+                    difficulty_users_dict[difficulty.name],
+                    timeblock,
+                    is_leetcode=True,
+                    difficulty=difficulty.name,
+                )
+
+        logger.info(
+            f"Pairing for G:{guild_id} T:{timeblock.name} with {len(users)} users."
         )
     except Exception as e:
         logger.error(e, exc_info=True)
+
+
+async def process_pairings(
+    guild_id: int,
+    users: List[discord.User],
+    timeblock: Timeblock,
+    is_leetcode: bool,
+    difficulty: str = None,
+):
+    guild_to_channel = read_guild_to_channel(GUILDS_PATH)
+    channel = client.get_channel(guild_to_channel[str(guild_id)])
+
+    if len(users) < 2:
+        for user in users:
+            logger.info(
+                f"G:{guild_id} T:{timeblock.name} pair failed, dming U:{user.id}."
+            )
+            msg = (
+                f"Thanks for signing up for pairing this {timeblock}. "
+                "Unfortunately, there was nobody else available this time."
+            )
+            await dm_user(user, msg)
+        await channel.send(
+            f"Not enough signups this {timeblock}. Try `/pairing-subscribe` or `/leetcode-subscribe` to sign up."
+        )
+        return
+
+    random.shuffle(users)
+    groups = [users[i :: len(users) // 2] for i in range(len(users) // 2)]
+    for group in groups:
+        if is_leetcode:
+            problem = get_random_leetcode_problem(difficulty)
+            notify_msg = ", ".join(f"<@{user.id}>" for user in group)
+            notify_msg += f": you've been matched together for this {timeblock} using `/leetcode-subscribe` to solve {problem['title']} - {problem['url']}. Happy coding!"
+        else:
+            notify_msg = ", ".join(f"<@{user.id}>" for user in group)
+            notify_msg += f": you've been matched together for this {timeblock} using `/pairing-subscribe`. Happy pairing! :computer:"
+
+        await create_group_thread(guild_id, group, channel, notify_msg)
+        logger.info(
+            f"G:{guild_id} C:{channel.id} paired U:{[user.id for user in group]} for {'/leetcode-subscribe' if is_leetcode else '/pairing-subscribe'}."
+        )
+
+    await channel.send(
+        f"Pairings for {len(users)} users have been sent out for this {timeblock} using {'/leetcode-subscribe' if is_leetcode else '/pairing-subscribe'}."
+    )
 
 
 def local_setup():
