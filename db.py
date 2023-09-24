@@ -30,6 +30,16 @@ class Timeblock(Enum):
         )
 
 
+class LeetcodeDifficulty(Enum):
+    Easy = "Easy"
+    Medium = "Medium"
+    Hard = "Hard"
+    Any = "Any Difficulty"
+
+    def __str__(self):
+        return self.name
+
+
 class ScheduleDB:
     def __init__(self, path: str) -> None:
         self.db = path
