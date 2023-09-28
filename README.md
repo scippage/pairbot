@@ -26,7 +26,7 @@ hatch run dev
 Run [black](https://pypi.org/project/black/) and [isort](https://pycqa.github.io/isort/index.html) on your code:
 
 ``` sh
-hatch run lint:black .
-hatch run lint:isort .
+hatch run style:check
+hatch run style:format
 ```
 

@@ -21,9 +21,19 @@ profile = "black"
 dev = "python bot.py -d"
 prod = "python bot.py"
 
-[tool.hatch.envs.lint]
+[tool.hatch.envs.style]
 detached = true
 dependencies = [
   "black",
   "isort"
+]
+
+[tool.hatch.envs.style.scripts]
+check = [
+  "black --check --diff .",
+  "isort --check-only --diff .",
+]
+format = [
+  "isort .",
+  "black .",
 ]
