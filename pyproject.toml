@@ -20,3 +20,10 @@ profile = "black"
 [tool.hatch.envs.default.scripts]
 dev = "python bot.py -d"
 prod = "python bot.py"
+
+[tool.hatch.envs.lint]
+detached = true
+dependencies = [
+  "black",
+  "isort"
+]

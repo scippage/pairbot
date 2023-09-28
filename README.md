@@ -8,7 +8,7 @@ Functionality is fairly minimal and example usage should be referenced through t
 
 The server administrator should use the appropriate administrator-only commands to configure how notifications get sent out.
 
-## Getting Started
+## Development
 
 Place your Discord bot token in .env:
 
@@ -22,3 +22,11 @@ Dependencies are managed with [Hatch](https://hatch.pypa.io/latest/):
 hatch env create
 hatch run dev
 ```
+
+Run [black](https://pypi.org/project/black/) and [isort](https://pycqa.github.io/isort/index.html) on your code:
+
+``` sh
+hatch run lint:black
+hatch run lint:isort
+```
+
