@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "pairbot"
 version = "0.0.1"
@@ -7,20 +11,11 @@ dependencies = [
   "python-dotenv"
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+# Entry point and scripts
+[project.scripts]
+pairbot = "pairbot:run_client"
 
-[tool.isort]
-multi_line_output = 3
-include_trailing_comma = true
-force_grid_wrap = 0
-profile = "black"
-
-[tool.hatch.envs.default.scripts]
-dev = "python bot.py -d"
-prod = "python bot.py"
-
+# Linting and formatting
 [tool.hatch.envs.style]
 detached = true
 dependencies = [
@@ -37,3 +32,9 @@ format = [
   "isort .",
   "black .",
 ]
+
+[tool.isort]
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+profile = "black"
