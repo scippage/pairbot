@@ -12,8 +12,8 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 
-from db import PairingsDB, ScheduleDB, Timeblock
-from utils import get_user_name, parse_args, read_guild_to_channel
+from .db import PairingsDB, ScheduleDB, Timeblock
+from .utils import get_user_name, parse_args, read_guild_to_channel
 
 load_dotenv()
 args = parse_args()
@@ -380,4 +380,5 @@ async def on_ready():
     logger.info("Bot started.")
 
 
-client.run(BOT_TOKEN)
+def run():
+    client.run(BOT_TOKEN)
