@@ -380,5 +380,5 @@ async def on_ready():
     logger.info("Bot started.")
 
 
-def run_client():
+def run():
     client.run(BOT_TOKEN)

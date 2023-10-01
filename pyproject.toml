@@ -11,9 +11,49 @@ dependencies = [
   "python-dotenv"
 ]
 
-# Entry point and scripts
+[project.urls]
+Documentation = "https://github.com/scippage/pairbot#readme"
+Issues = "https://github.com/scippage/pairbot/issues"
+Source = "https://github.com/scippage/pairbot"
+
 [project.scripts]
-pairbot = "pairbot:run_client"
+pairbot = "pairbot:run"
+
+# Testing
+[tool.hatch.envs.default]
+dependencies = [
+  "coverage[toml]>=6.5",
+  "pytest",
+]
+
+[tool.hatch.envs.default.scripts]
+test = "pytest {args:tests}"
+test-cov = "coverage run -m pytest {args:tests}"
+cov-report = [
+  "- coverage combine",
+  "coverage report",
+]
+cov = [
+  "test-cov",
+  "cov-report",
+]
+
+[tool.coverage.run]
+source_pkgs = ["pairbot", "tests"]
+branch = true
+parallel = true
+omit = []
+
+[tool.coverage.paths]
+pairbot = ["pairbot", "*/pairbot/pairbot"]
+tests = ["tests", "*/pairbot/tests"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "no cov",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
 
 # Linting and formatting
 [tool.hatch.envs.style]

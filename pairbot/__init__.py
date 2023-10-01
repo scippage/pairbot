@@ -1,1 +1,1 @@
-from .bot import run_client
+from .client import run
