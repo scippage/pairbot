@@ -2,6 +2,7 @@ import argparse
 import json
 
 import discord
+import discord.ext.commands
 
 
 def parse_args():

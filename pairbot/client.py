@@ -1,384 +1,680 @@
-import json
+"""client.py
+
+This module describes the Discord slash command interface and corresponding logic.
+"""
+
+import functools
 import logging
-import os
-import random
-import sqlite3
-from datetime import datetime
-from pathlib import Path
-from typing import List
+
+from typing import (
+    Any,
+    Optional,
+    TypeVar,
+    ParamSpec,
+    Callable,
+    Concatenate,
+    Coroutine,
+)
+
+import sqlalchemy
+from sqlalchemy import (
+    create_engine,
+    func
+)
+import sqlalchemy.orm
+from sqlalchemy.orm import (
+    Session,
+    sessionmaker,
+
+)
 
 import discord
-from discord import app_commands
-from discord.ext import tasks
-from dotenv import load_dotenv
+import discord.ext.commands
+import discord.ext.tasks
 
-from .db import PairingsDB, ScheduleDB, Timeblock
-from .utils import get_user_name, parse_args, read_guild_to_channel
+from datetime import datetime, timedelta
+import dateparser
 
-load_dotenv()
-args = parse_args()
-if args.dev:
-    print("Running in dev mode.")
-    BOT_TOKEN = os.getenv("BOT_TOKEN_DEV")
-    DATA_DIR = "data"
-    GUILDS_PATH = f"{DATA_DIR}/guilds-dev.json"
-    SCHEDULE_DB_PATH = f"{DATA_DIR}/schedule-dev.db"
-    PAIRINGS_DB_PATH = f"{DATA_DIR}/pairings-dev.db"
-    LOG_FILE = "pairbot-dev.log"
-else:
-    print("Running in prod mode.")
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    DATA_DIR = "data"
-    GUILDS_PATH = f"{DATA_DIR}/guilds.json"
-    SCHEDULE_DB_PATH = f"{DATA_DIR}/schedule.db"
-    PAIRINGS_DB_PATH = f"{DATA_DIR}/pairings.db"
-    LOG_FILE = "pairbot.log"
-SORRY = "Unexpected error."
-Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
-
-logging.basicConfig(
-    filename=LOG_FILE,
-    filemode="a",
-    format="%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s",
-    datefmt="%H:%M:%S",
-    level=logging.DEBUG,
+from . import (
+    config,
 )
-logger = logging.getLogger("pairbot")
 
-intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True
-client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
-db = ScheduleDB(SCHEDULE_DB_PATH)
-pairings_db = PairingsDB(PAIRINGS_DB_PATH)
+from .models import (
+    Weekday,
+    PairingChannel,
+    Schedule,
+    ScheduleAdjustment,
+    Thread,
+)
+
+logger = logging.getLogger(__name__)
+
+# type fuckery for the command decorator
+T = TypeVar("T")
+P = ParamSpec("P")
+CommandCallback = Callable[Concatenate[discord.Interaction[Any], P], Coroutine[Any, Any, T]]
+
+class Pairbot(discord.Client):
+    """Represents a running instance of Pairbot."""
+
+    def __init__(self, intents: discord.Intents, **options: Any) -> None:
+        super().__init__(intents=intents, **options)
+        self.tree = discord.app_commands.CommandTree(self)
+
+        self.db_engine = create_engine(config.DATABASE_URL)
+        self.make_orm_session = sessionmaker(self.db_engine)
+
+    def command(
+        self,
+        **options: Any
+    ):
+        """Wrapper for pairbot slash commands with logging and error-handling."""
+        def decorator(callback: CommandCallback):
+            @self.tree.command(**options)
+            @discord.app_commands.guild_only()
+            @functools.wraps(callback)
+            async def wrapper(
+                interaction: discord.Interaction[Any],
+                *args: P.args,
+                **kwargs: P.kwargs,
+            ) -> None:
+                # Keep type checker happy
+                assert interaction.command is not None
+                assert interaction.guild is not None
+                assert isinstance(interaction.channel, discord.TextChannel)
+                assert isinstance(interaction.user, discord.Member)
+
+                # Log command execution
+                pretty_kwargs = (
+                    " with arguments { " +
+                    ", ".join((f"{key}=\"{str(value)}\"" for key, value in kwargs.items())) +
+                    " }"
+                    if len(kwargs) > 0 else " with no arguments"
+                )
+                logger.info(
+                    f"User \"{interaction.user.name}\" executed command /{interaction.command.name}{pretty_kwargs} in guild \"{interaction.guild.name}\", channel \"#{interaction.channel.name}\"."
+                )
+
+                try:
+                    await callback(interaction, *args, **kwargs)
+                except Exception as e:
+                    logger.error(e, exc_info=True)
+                    await interaction.response.send_message("Pairbot broke somehow! :v", ephemeral=True)
+
+            return wrapper
+        return decorator
+
+    async def on_ready(self) -> None:
+        for guild in self.guilds:
+            logger.info(f"Copying command tree to guild \"{guild.name}\"")
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+        logger.info("Pairbot ready.")
 
 
-# Discord API currently doesn't support variadic arguments
-# https://github.com/discord/discord-api-docs/discussions/3286
-@tree.command(
-    name="subscribe",
-    description="Add timeblocks to find a partner for pair programming. \
-Matches go out at 8am UTC that day.",
+# Instantiate client and register slash commands
+intents = discord.Intents.all()
+client = Pairbot(
+    intents=intents,
 )
-@app_commands.describe(
-    timeblock="Choose WEEK to get a partner for the whole week (pairs announced Monday UTC)."
+
+
+@client.command(
+    name="addpairbot",
+    description="Add Pairbot to the current channel."
 )
-@app_commands.choices(
-    timeblock=[
-        app_commands.Choice(name=Timeblock.WEEK.name, value=Timeblock.WEEK.value),
-        app_commands.Choice(name=Timeblock.Monday.name, value=Timeblock.Monday.value),
-        app_commands.Choice(name=Timeblock.Tuesday.name, value=Timeblock.Tuesday.value),
-        app_commands.Choice(
-            name=Timeblock.Wednesday.name, value=Timeblock.Wednesday.value
-        ),
-        app_commands.Choice(
-            name=Timeblock.Thursday.name, value=Timeblock.Thursday.value
-        ),
-        app_commands.Choice(name=Timeblock.Friday.name, value=Timeblock.Friday.value),
-        app_commands.Choice(
-            name=Timeblock.Saturday.name, value=Timeblock.Saturday.value
-        ),
-        app_commands.Choice(name=Timeblock.Sunday.name, value=Timeblock.Sunday.value),
-    ]
-)
-async def _subscribe(interaction: discord.Interaction, timeblock: Timeblock):
-    try:
-        db.insert(interaction.guild_id, interaction.user.id, timeblock)
-        timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
+@discord.app_commands.checks.has_permissions(administrator=True)
+async def _add_pairbot(interaction: discord.Interaction):
+    assert interaction.guild is not None
+    assert isinstance(interaction.channel, discord.TextChannel)
+
+    session = client.make_orm_session()
+    with session.begin():
+        channel = (
+            session.query(PairingChannel)
+            .filter(PairingChannel.channel_id == interaction.channel_id)
+            .one_or_none()
+        )
+
+        if channel is not None:
+            if channel.active:
+                logger.info(
+                    f"Pairbot is already added to guild \"{interaction.guild.name}\", channel \"#{interaction.channel}\"."
+                )
+                await interaction.response.send_message(
+                    f"Pairbot is already added to \"#{interaction.channel.name}\"."
+                )
+                return
+            else:
+                channel.active = True
+        else:
+            channel = PairingChannel(
+                guild_id = interaction.guild.id,
+                channel_id = interaction.channel.id,
+                active = True,
+                leetcode_integration = False, # TODO
+            )
+            session.add(channel)
+
+        session.commit()
+
         logger.info(
-            f"G:{interaction.guild_id} U:{interaction.user.id} subscribed T:{timeblock.name}."
-        )
-        msg = (
-            f"Your new schedule is `{Timeblock.generate_schedule(timeblocks)}`. "
-            f"You can call `/subscribe` again to sign up for more days."
-        )
-        await interaction.response.send_message(msg, ephemeral=True)
-    except sqlite3.IntegrityError as e:
-        logger.info(
-            f"G:{interaction.guild_id} U:{interaction.user.id} failed subscribe T:{timeblock.name}."
-        )
-        logger.warning(e, exc_info=True)
-        msg = (
-            f"You are already subscribed to {timeblock}. "
-            f"Call `/unsubscribe` to remove a subscription or `/schedule` to view your schedule."
-        )
-        await interaction.response.send_message(msg, ephemeral=True)
-    except Exception as e:
-        logger.error(e, exc_info=True)
-        await interaction.response.send_message(SORRY, ephemeral=True)
-
-
-@tree.command(name="unsubscribe", description="Remove timeblocks for pair programming.")
-@app_commands.describe(timeblock="Call `/unsubscribe-all` to remove all timeblocks.")
-@app_commands.choices(
-    timeblock=[
-        app_commands.Choice(name=Timeblock.WEEK.name, value=Timeblock.WEEK.value),
-        app_commands.Choice(name=Timeblock.Monday.name, value=Timeblock.Monday.value),
-        app_commands.Choice(name=Timeblock.Tuesday.name, value=Timeblock.Tuesday.value),
-        app_commands.Choice(
-            name=Timeblock.Wednesday.name, value=Timeblock.Wednesday.value
-        ),
-        app_commands.Choice(
-            name=Timeblock.Thursday.name, value=Timeblock.Thursday.value
-        ),
-        app_commands.Choice(name=Timeblock.Friday.name, value=Timeblock.Friday.value),
-        app_commands.Choice(
-            name=Timeblock.Saturday.name, value=Timeblock.Saturday.value
-        ),
-        app_commands.Choice(name=Timeblock.Sunday.name, value=Timeblock.Sunday.value),
-    ]
-)
-async def _unsubscribe(interaction: discord.Interaction, timeblock: Timeblock):
-    try:
-        db.delete(interaction.guild_id, interaction.user.id, timeblock)
-        timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
-        logger.info(
-            f"G:{interaction.guild_id} U:{interaction.user.id} unsubscribed T:{timeblock.name}."
-        )
-        msg = f"Your new schedule is `{Timeblock.generate_schedule(timeblocks)}`."
-        await interaction.response.send_message(msg, ephemeral=True)
-    except Exception as e:
-        logger.error(e, exc_info=True)
-        await interaction.response.send_message(SORRY, ephemeral=True)
-
-
-@tree.command(
-    name="unsubscribe-all", description="Remove all timeblocks for pair programming."
-)
-async def _unsubscribe_all(interaction: discord.Interaction):
-    try:
-        db.unsubscribe(interaction.guild_id, interaction.user.id)
-        logger.info(
-            f"G:{interaction.guild_id} U:{interaction.user.id} called unsubscribe-all."
-        )
-        msg = "Your pairing subscriptions have been removed. To rejoin, call `/subscribe` again."
-        await interaction.response.send_message(msg, ephemeral=True)
-    except Exception as e:
-        logger.error(e, exc_info=True)
-        await interaction.response.send_message(SORRY, ephemeral=True)
-
-
-@tree.command(name="schedule", description="View your pairing schedule.")
-async def _schedule(interaction: discord.Interaction):
-    try:
-        timeblocks = db.query_userid(interaction.guild_id, interaction.user.id)
-        schedule = Timeblock.generate_schedule(timeblocks)
-        logger.info(
-            f"G:{interaction.guild_id} U:{interaction.user.id} queried schedule {schedule}."
-        )
-        msg = (
-            f"Your current schedule is `{schedule}`. "
-            "You can call `/subscribe` or `/unsubscribe` to modify it."
-        )
-        await interaction.response.send_message(msg, ephemeral=True)
-    except Exception as e:
-        logger.error(e, exc_info=True)
-        await interaction.response.send_message(SORRY, ephemeral=True)
-
-
-@tree.command(
-    name="set-channel", description="Set a channel for bot messages (admin only)."
-)
-@app_commands.checks.has_permissions(administrator=True)
-async def _set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    try:
-        guild_to_channel = read_guild_to_channel(GUILDS_PATH)
-        guild_to_channel[str(interaction.guild_id)] = channel.id
-        with open(GUILDS_PATH, "w") as f:
-            json.dump(guild_to_channel, f)
-        logger.info(
-            f"G:{interaction.guild_id} U:{interaction.user.id} set-channel C:{channel.id}."
-        )
-        msg = f"Successfully set bot channel to `{channel.name}`."
-        await interaction.response.send_message(msg, ephemeral=True)
-    except Exception as e:
-        logger.error(e, exc_info=True)
-        await interaction.response.send_message(SORRY, ephemeral=True)
-
-
-@tree.command(
-    name="pairwith",
-    description="Start an immediate pairing session with another member.",
-)
-async def _pairwith(interaction: discord.Interaction, user: discord.Member):
-    try:
-        guild_to_channel = read_guild_to_channel(GUILDS_PATH)
-        channel_id = guild_to_channel[str(interaction.guild_id)]
-        channel = client.get_channel(channel_id)
-        users = [interaction.user, user]
-        notify_msg = (
-            f"<@{interaction.user.id}> has started an on-demand pair with you, <@{user.id}>. "
-            "Happy pairing! :computer:"
-        )
-        await create_group_thread(interaction.guild_id, users, channel, notify_msg)
-        logger.info(
-            f"G:{interaction.guild_id} C:{channel.id} on-demand paired U:{interaction.user.id} with {user.id}."
+            f"Added Pairbot to guild \"{interaction.guild.name}\", channel \"#{interaction.channel.name}\"."
         )
         await interaction.response.send_message(
-            f"Thread with {get_user_name(user)} created in channel `{channel.name}`.",
-            ephemeral=True,
+            f"Added Pairbot to \"#{interaction.channel.name}\"."
         )
-    except Exception as e:
-        logger.error(e, exc_info=True)
-        await interaction.response.send_message(SORRY, ephemeral=True)
 
 
-async def dm_user(user: discord.User, msg: str):
-    try:
-        channel = await user.create_dm()
-        await channel.send(msg)
-    except Exception as e:
-        logger.error(e, exc_info=True)
+@client.command(
+    name="removepairbot",
+    description="Remove Pairbot from the current channel."
+)
+@discord.app_commands.guild_only()
+@discord.app_commands.checks.has_permissions(administrator=True)
+async def _remove_pairbot(interaction: discord.Interaction):
+    assert interaction.guild is not None
+    assert isinstance(interaction.channel, discord.TextChannel)
+
+    session = client.make_orm_session()
+    with session.begin():
+        channel = (
+            session.query(PairingChannel)
+            .filter(PairingChannel.channel_id == interaction.channel_id)
+            .one_or_none()
+        )
+
+        if channel is None or not channel.active:
+            logger.info(
+                f"Pairbot is not added to guild \"{interaction.guild.name}\", channel \"#{interaction.channel}\"."
+            )
+            await interaction.response.send_message(
+                f"Pairbot is not added to \"#{interaction.channel.name}\"."
+            )
+        else:
+            channel.active = False
+            session.commit()
+            logger.info(
+                f"Removed Pairbot from guild \"{interaction.guild.name}\", channel \"#{interaction.channel.name}\"."
+            )
+            await interaction.response.send_message(
+                f"Removed Pairbot from \"#{interaction.channel.name}\"."
+            )
 
 
-async def create_group_thread(
-    guild_id: int,
-    users: List[discord.User],
-    channel: discord.TextChannel,
-    notify_msg: str,
+@client.command(
+    name="subscribe",
+    description="Subscribe to pair programming (every day if no weekday specified)."
+)
+@discord.app_commands.guild_only()
+async def _subscribe(
+    interaction: discord.Interaction,
+    weekday: Optional[Weekday],
 ):
-    # @ notifying users in a private thread invites them
-    # so `notify_msg` must notify for this to work
-    userids = [user.id for user in users]
-    thread_id = pairings_db.query_userids(guild_id, userids, channel.id)
-    thread = None
-    if thread_id is not None:
-        logger.debug(f"Found existing thread {thread_id} for G:{guild_id} U:{userids}")
-        try:
-            guild = client.get_guild(guild_id)
-            thread = await guild.fetch_channel(thread_id)
-        except discord.errors.NotFound:
-            logger.debug(f"Couldn't fetch thread {thread_id}, maybe deleted?")
-            pairings_db.delete(guild_id, userids, channel.id, thread_id)
-    if thread is None:
-        title = ", ".join(get_user_name(user) for user in users)
-        thread = await channel.create_thread(
-            name=f"{title}", auto_archive_duration=10080
+    assert interaction.guild is not None
+    assert isinstance(interaction.channel, discord.TextChannel)
+    session = client.make_orm_session()
+    with session.begin():
+        channel = (
+            session.query(PairingChannel)
+            .filter(PairingChannel.channel_id == interaction.channel_id)
+            .one_or_none()
         )
-        logger.debug(f"Created new thread {thread.id} for G:{guild_id} U:{userids}")
-        pairings_db.insert(guild_id, userids, channel.id, thread.id)
-    else:
-        logger.debug(f"Found existing thread {thread_id} for G:{guild_id} U:{userids}")
-        guild = client.get_guild(guild_id)
-        thread = await guild.fetch_channel(thread_id)
-    await thread.send(notify_msg)
-
-
-async def on_tree_error(
-    interaction: discord.Interaction, error: app_commands.AppCommandError
-):
-    if isinstance(error, app_commands.CommandOnCooldown):
-        return await interaction.response.send_message(
-            f"Command is currently on cooldown, try again in {error.retry_after:.2f} seconds.",
-            ephemeral=True,
-        )
-    elif isinstance(error, app_commands.MissingPermissions):
-        return await interaction.response.send_message(
-            "You don't have the permissions to do that.", ephemeral=True
-        )
-    else:
-        raise error
-
-
-@tasks.loop(hours=1)
-async def pairing_cron():
-    def should_run():
-        now = datetime.utcnow()
-        hour = now.time().hour
-        logger.debug(f"Checking pairing job at UTC:{now}.")
-        return hour == 8
-
-    if should_run():
-        await run_pairing()
-
-
-async def run_pairing():
-    now = datetime.utcnow()
-    print(now)
-    logger.debug(f"Running pairing job at UTC:{now}.")
-    weekday = now.weekday()
-    weekday_map = {
-        0: Timeblock.Monday,
-        1: Timeblock.Tuesday,
-        2: Timeblock.Wednesday,
-        3: Timeblock.Thursday,
-        4: Timeblock.Friday,
-        5: Timeblock.Saturday,
-        6: Timeblock.Sunday,
-    }
-    timeblock = weekday_map[weekday]
-    for guild in client.guilds:
-        await pair(guild.id, timeblock)
-        # weekly Monday match
-        if weekday == 0:
-            await pair(guild.id, Timeblock.WEEK)
-
-
-async def pair(guild_id: int, timeblock: Timeblock):
-    try:
-        userids = db.query_timeblock(guild_id, timeblock)
-        users = [client.get_user(userid) for userid in userids]
-        # Users may leave the server without unsubscribing
-        # TODO: listen to that event and drop them from the table
-        users = list(filter(None, users))
-        logger.info(
-            f"Pairing for G:{guild_id} T:{timeblock.name} with {len(users)}/{len(userids)} users."
-        )
-        guild_to_channel = read_guild_to_channel(GUILDS_PATH)
-        channel = client.get_channel(guild_to_channel[str(guild_id)])
-        if len(users) < 2:
-            for user in users:
-                logger.info(
-                    f"G:{guild_id} T:{timeblock.name} pair failed, dming U:{user.id}."
-                )
-                msg = (
-                    f"Thanks for signing up for pairing this {timeblock}. "
-                    "Unfortunately, there was nobody else available this time."
-                )
-                await dm_user(user, msg)
-            await channel.send(
-                f"Not enough signups this {timeblock}. Try `/subscribe` to sign up!"
+        if channel is None:
+            await interaction.response.send_message(
+                f"Pairbot is not active in this channel.",
+                ephemeral=True
             )
             return
 
-        random.shuffle(users)
-        groups = [users[i :: len(users) // 2] for i in range(len(users) // 2)]
-        for group in groups:
-            notify_msg = ", ".join(f"<@{user.id}>" for user in group)
-            notify_msg = f"{notify_msg}: you've been matched together for this {timeblock}. Happy pairing! :computer:"
-            await create_group_thread(guild_id, group, channel, notify_msg)
-            logger.info(
-                f"G:{guild_id} C:{channel.id} paired U:{[user.id for user in group]}."
-            )
-        await channel.send(
-            f"Pairings for {len(users)} users have been sent out for this {timeblock}. Try `/subscribe` to sign up!"
+        schedule = (
+            session.query(Schedule)
+            .filter(Schedule.channel_id == interaction.channel_id)
+            .filter(Schedule.user_id == interaction.user.id)
+            .one_or_none()
         )
-    except Exception as e:
-        logger.error(e, exc_info=True)
+
+        if schedule is None:
+            schedule = Schedule(
+                channel_id = interaction.channel_id,
+                user_id = interaction.user.id,
+            )
+            session.add(schedule)
+
+        if weekday is not None:
+            if schedule[weekday] == True:
+                await interaction.response.send_message(
+                    f"You are already subscribed to pair programming on {str(weekday)} in #{interaction.channel.name}.",
+                    ephemeral=True
+                )
+                return
+            else:
+                schedule[weekday] = True
+
+            session.commit()
+
+            logger.info(
+                f"Subscribed user \"{interaction.user.name}\" to pair programming on {str(weekday)} in guild \"{interaction.guild.name}\", channel \"#{interaction.channel.name}\"."
+            )
+
+            msg = f"Successfully subscribed to pair programming on {str(weekday)} in #{interaction.channel.name}."
+        else:
+            if len(schedule.days_available) == 7:
+                await interaction.response.send_message(
+                    f"You are already subscribed to pair programming every day.",
+                    ephemeral=True
+                )
+                return
+            for day in Weekday:
+                schedule[day] = True
+
+            session.commit()
+
+            logger.info(
+                f"Subscribed user \"{interaction.user.name}\" to daily pair programming in guild \"{interaction.guild.name}\", channel \"#{interaction.channel.name}\"."
+            )
+
+            msg = f"Successfully subscribed to daily pair programming in #{interaction.channel.name}."
+    await interaction.response.send_message(msg, ephemeral=True)
 
 
-def local_setup():
-    try:
-        read_guild_to_channel(GUILDS_PATH)
-    except Exception:
-        with open(GUILDS_PATH, "w") as f:
-            json.dump({}, f)
+@client.command(
+    name="unsubscribe",
+    description="Unsubscribe from pair programming (every day if no weekday specified)."
+)
+@discord.app_commands.guild_only()
+async def _unsubscribe(
+    interaction: discord.Interaction,
+    weekday: Optional[Weekday],
+):
+    assert interaction.guild is not None
+    assert isinstance(interaction.channel, discord.TextChannel)
+
+    session = client.make_orm_session()
+    with session.begin():
+        channel = (
+            session.query(PairingChannel)
+            .filter(PairingChannel.channel_id == interaction.channel_id)
+            .one_or_none()
+        )
+        if channel is None:
+            await interaction.response.send_message(
+                f"Pairbot is not active in this channel.",
+                ephemeral=True
+            )
+            return
+
+        schedule = (
+            session.query(Schedule)
+            .filter(Schedule.channel_id == interaction.channel_id)
+            .filter(Schedule.user_id == interaction.user.id)
+            .one_or_none()
+        )
+
+        if schedule is None:
+            await interaction.response.send_message(
+                f"You are already not subscribed to pair programming in #{interaction.channel.name}.",
+                ephemeral=True
+            )
+            return
+
+        if weekday is not None:
+            if not schedule[weekday]:
+                await interaction.response.send_message(
+                    f"You are already not subscribed to pair programming on {str(weekday)} in #{interaction.channel.name}.",
+                    ephemeral=True
+                )
+                return
+
+            schedule[weekday] = False
+            session.commit()
+
+            logger.info(
+                f"Unsubscribed user \"{interaction.user.name}\" from pair programming on {str(weekday)} in guild \"{interaction.guild.name}\", channel \"#{interaction.channel.name}\"."
+            )
+
+            msg = f"Successfully unsubscribed from pair programming on {str(weekday)} in #{interaction.channel.name}."
+        else:
+            if len(schedule.days_available) == 0:
+                await interaction.response.send_message(
+                    f"You are already not subscribed to pair programming.",
+                    ephemeral=True
+                )
+                return
+            for day in Weekday:
+                schedule[day] = False
+            session.commit()
+
+            logger.info(
+                f"Unsubscribed user \"{interaction.user.name}\" from all pair programming in guild \"{interaction.guild.name}\", channel \"#{interaction.channel.name}\"."
+            )
+
+            msg = f"Successfully unsubscribed from all pair programming in #{interaction.channel.name}."
+
+    await interaction.response.send_message(msg, ephemeral=True)
 
 
-@client.event
-async def on_ready():
-    local_setup()
-    await client.wait_until_ready()
-    tree.on_error = on_tree_error
-    for guild in client.guilds:
-        tree.copy_global_to(guild=guild)
-        await tree.sync(guild=guild)
-    print("Code sync complete!")
-    pairing_cron.start()
-    print("Starting cron loop...")
-    logger.info("Bot started.")
+@client.command(
+    name="skip",
+    description="Mark yourself as unavailable for pair programming on some date in the future)."
+)
+@discord.app_commands.describe(human_date="A human-readable date like \"tomorrow\" or \"January 1\".")
+@discord.app_commands.guild_only()
+async def _skip(
+    interaction: discord.Interaction,
+    human_date: Optional[str],
+):
+    assert interaction.guild is not None
+    assert isinstance(interaction.channel, discord.TextChannel)
+
+    session = client.make_orm_session()
+    with session.begin():
+        channel = (
+            session.query(PairingChannel)
+            .filter(PairingChannel.channel_id == interaction.channel_id)
+            .one_or_none()
+        )
+        if channel is None:
+            await interaction.response.send_message(
+                f"Pairbot is not active in this channel.",
+                ephemeral=True
+            )
+            return
+
+        schedule = (
+            session.query(Schedule)
+            .filter(Schedule.channel_id == interaction.channel_id)
+            .filter(Schedule.user_id == interaction.user.id)
+            .one_or_none()
+        )
+
+        if schedule is None or len(schedule.days_available) == 0:
+            await interaction.response.send_message(
+                f"You are not subscribed to pair programming in #{interaction.channel.name}.",
+                ephemeral=True
+            )
+            return
+
+        if human_date is None:
+            adjustment_date = None
+            current_weekday = datetime.now().weekday()
+            for i in range(0, 7):
+                weekday = Weekday((current_weekday + i) % 7)
+                if schedule[weekday]:
+                    adjustment_date = datetime.now().date() + timedelta(days=i)
+                    break
+
+            assert adjustment_date is not None
+        else:
+            # Clean things up for the parser
+            cleaned_date = human_date.lower()
+            cleaned_date = cleaned_date.replace("next", "")
+
+            # Try to parse the date
+            adjustment_datetime = dateparser.parse(
+                cleaned_date,
+                settings={
+                    "PREFER_DATES_FROM": "future",
+                    "RELATIVE_BASE": datetime.now(),
+                },
+                languages=["en"],
+            )
+            if adjustment_datetime is None:
+                await interaction.response.send_message(
+                    f"Could not parse date \"{human_date}\".",
+                    ephemeral=True
+                )
+                return
+
+            adjustment_date = adjustment_datetime.date()
+            if adjustment_datetime < datetime.now():
+                await interaction.response.send_message(
+                    f"Cannot skip a date in the past: {adjustment_date.strftime('%A %B %d, %Y')}.",
+                    ephemeral=True
+                )
+                return
+
+            weekday = Weekday(adjustment_date.weekday())
+            if schedule[weekday] == False:
+                await interaction.response.send_message(
+                    f"You are not subscribed to pair programming in #{interaction.channel.name} on {weekday}.",
+                    ephemeral=True
+                )
+                return
+
+        adjustment = (
+            session.query(ScheduleAdjustment)
+            .filter(ScheduleAdjustment.channel_id == interaction.channel_id)
+            .filter(ScheduleAdjustment.user_id == interaction.user.id)
+            .filter(func.DATE(ScheduleAdjustment.date) == adjustment_date)
+            .one_or_none()
+        )
+
+        if adjustment is None:
+            adjustment = ScheduleAdjustment(
+                channel_id=interaction.channel_id,
+                user_id=interaction.user.id,
+                date=adjustment_date,
+                available=False,
+            )
+            session.add(adjustment)
+        else:
+            if adjustment.available == False:
+                await interaction.response.send_message(
+                    f"You already skipped pairing on {adjustment_date.strftime('%A %B %d, %Y')}.",
+                    ephemeral=True
+                )
+                return
+            adjustment.available = False
+        session.commit()
+
+    logger.info(
+        f"Skipped pair programming on {adjustment_date.strftime('%A %B %d, %Y')} for user \"{interaction.user.name}\" in guild \"{interaction.guild.name}\", channel \"#{interaction.channel.name}\"."
+    )
+
+    msg = f"Successfully skipped pair programming on {adjustment_date.strftime('%A %B %d, %Y')}."
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+@client.command(
+    name="unskip",
+    description="Mark yourself as available for pair programming on some date in the future."
+)
+@discord.app_commands.describe(human_date="A human-readable date like \"tomorrow\" or \"January 1\".")
+@discord.app_commands.guild_only()
+async def _unskip(
+    interaction: discord.Interaction,
+    human_date: Optional[str],
+):
+    assert interaction.guild is not None
+    assert isinstance(interaction.channel, discord.TextChannel)
+
+    session = client.make_orm_session()
+    with session.begin():
+        channel = (
+            session.query(PairingChannel)
+            .filter(PairingChannel.channel_id == interaction.channel_id)
+            .one_or_none()
+        )
+        if channel is None:
+            await interaction.response.send_message(
+                f"Pairbot is not active in this channel.",
+                ephemeral=True
+            )
+            return
+
+        schedule = (
+            session.query(Schedule)
+            .filter(Schedule.channel_id == interaction.channel_id)
+            .filter(Schedule.user_id == interaction.user.id)
+            .one_or_none()
+        )
+
+        if schedule is None or len(schedule.days_available) == 0:
+            await interaction.response.send_message(
+                f"You are not subscribed to pair programming in #{interaction.channel.name}.",
+                ephemeral=True
+            )
+            return
+
+        if human_date is None:
+            adjustment_date = None
+            current_weekday = datetime.now().weekday()
+            for i in range(0, 7):
+                weekday = Weekday((current_weekday + i) % 7)
+                if schedule[weekday]:
+                    adjustment_date = datetime.now().date() + timedelta(days=i)
+                    break
+
+            assert adjustment_date is not None
+        else:
+            # Clean things up for the parser
+            cleaned_date = human_date.lower()
+            cleaned_date = cleaned_date.replace("next", "")
+
+            # Try to parse the date
+            adjustment_datetime = dateparser.parse(
+                cleaned_date,
+                settings={
+                    "PREFER_DATES_FROM": "future",
+                    "RELATIVE_BASE": datetime.now(),
+                },
+                languages=["en"],
+            )
+            if adjustment_datetime is None:
+                await interaction.response.send_message(
+                    f"Could not parse date \"{human_date}\".",
+                    ephemeral=True
+                )
+                return
+
+            adjustment_date = adjustment_datetime.date()
+            if adjustment_datetime < datetime.now():
+                await interaction.response.send_message(
+                    f"Cannot unskip a date in the past: {adjustment_date.strftime('%A %B %d, %Y')}.",
+                    ephemeral=True
+                )
+                return
+
+            weekday = Weekday(adjustment_date.weekday())
+            if schedule[weekday] == False:
+                await interaction.response.send_message(
+                    f"You are not subscribed to pair programming in #{interaction.channel.name} on {weekday}.",
+                    ephemeral=True
+                )
+                return
+
+        adjustment = (
+            session.query(ScheduleAdjustment)
+            .filter(ScheduleAdjustment.channel_id == interaction.channel_id)
+            .filter(ScheduleAdjustment.user_id == interaction.user.id)
+            .filter(func.DATE(ScheduleAdjustment.date) == adjustment_date)
+            .one_or_none()
+        )
+
+        if adjustment is None:
+            adjustment = ScheduleAdjustment(
+                channel_id=interaction.channel_id,
+                user_id=interaction.user.id,
+                date=adjustment_date,
+                available=True,
+            )
+            session.add(adjustment)
+        else:
+            if adjustment.available == True:
+                await interaction.response.send_message(
+                    f"You already unskipped pairing on {adjustment_date.strftime('%A %B %d, %Y')}.",
+                    ephemeral=True
+                )
+                return
+            adjustment.available = True
+        session.commit()
+
+    logger.info(
+        f"Unskipped pair programming on {adjustment_date.strftime('%A %B %d, %Y')} for user \"{interaction.user.name}\" in guild \"{interaction.guild.name}\", channel \"#{interaction.channel.name}\"."
+    )
+
+    msg = f"Successfully unskipped pair programming on {adjustment_date.strftime('%A %B %d, %Y')}."
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+@client.command(
+    name="viewschedule",
+    description="View your pair programming schedule."
+)
+@discord.app_commands.guild_only()
+async def _view_schedule(
+    interaction: discord.Interaction,
+):
+    assert interaction.guild is not None
+
+    session = client.make_orm_session()
+    with session.begin():
+        schedules = (
+            session.query(Schedule)
+            .filter(Schedule.user_id == interaction.user.id)
+            .all()
+        )
+
+        adjustments = (
+            session.query(ScheduleAdjustment)
+            .filter(ScheduleAdjustment.user_id == interaction.user.id)
+            .all()
+        )
+
+        guild_schedule = {
+            interaction.guild.get_channel(schedule.channel_id): [str(day) for day in schedule.days_available]
+            for schedule in schedules
+        }
+
+        skipped = dict()
+        unskipped = dict()
+
+        for adjustment in adjustments:
+            channel_name = interaction.guild.get_channel(adjustment.channel_id)
+            if adjustment.available == False:
+                if channel_name not in skipped:
+                    skipped[channel_name] = []
+                skipped[channel_name].append(adjustment.date.strftime("%a %b %d"))
+            if adjustment.available == True:
+                if channel_name not in unskipped:
+                    unskipped[channel_name] = []
+                unskipped[channel_name].append(adjustment.date.strftime("%a %b %d"))
+
+        if len(guild_schedule) == 0 or sum([len(days) for days in guild_schedule.values()]) == 0:
+            msg = "You are not subscribed to pair programming."
+        elif len(guild_schedule) == 1:
+            channel_name, schedule = guild_schedule.popitem()
+            msg = f"You are subscribed to pair programming in #{channel_name} on {', '.join(schedule)}"
+            if channel_name in skipped and len(skipped[channel_name]) > 0:
+                msg += f" (skipping {', '.join(skipped[channel_name])})"
+        else:
+            msg = "You are subscribed to pair programming in the following channels:\n"
+            for channel_name, schedule in guild_schedule.items():
+                msg += f"* #{channel_name}: {', '.join(schedule)}"
+                if channel_name in skipped and len(skipped[channel_name]) > 0:
+                    msg += f" (skipping {', '.join(skipped[channel_name])})"
+                msg += "\n"
+
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+@client.command(
+    name="pairwith",
+    description="Start a pairing session with another channel member."
+)
+@discord.app_commands.guild_only()
+async def _pair_with(
+    interaction: discord.Interaction,
+    user: discord.Member,
+):
+    await interaction.response.send_message("Works", ephemeral=True)
+
+
+@discord.ext.tasks.loop(time=config.PAIRING_TIME)
+async def make_groups():
+    pass
 
 
 def run():
-    client.run(BOT_TOKEN)
+    client.run(config.DISCORD_BOT_TOKEN)

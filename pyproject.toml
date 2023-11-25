@@ -7,8 +7,11 @@ name = "pairbot"
 version = "0.0.1"
 readme = "README.md"
 dependencies = [
+  "SQLAlchemy",
+  "alembic",
   "discord",
-  "python-dotenv"
+  "python-dotenv",
+  "dateparser"
 ]
 
 [project.urls]
@@ -21,6 +24,7 @@ pairbot = "pairbot:run"
 
 # Testing
 [tool.hatch.envs.default]
+python = "3.11"
 dependencies = [
   "coverage[toml]>=6.5",
   "pytest",
