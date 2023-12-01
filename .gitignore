@@ -164,4 +164,7 @@ cython_debug/
 *.log
 
 .env
+.env.*
 data/
+
+*.sqlite3

@@ -23,6 +23,13 @@ hatch env create
 hatch run dev
 ```
 
+Database migrations are handled with [Alembic](https://alembic.sqlalchemy.org).
+
+``` sh
+alembic revision --autogenerate -m "Brief description of changes..."
+alembic upgrade head
+```
+
 Run [black](https://pypi.org/project/black/) and [isort](https://pycqa.github.io/isort/index.html) on your code:
 
 ``` sh
