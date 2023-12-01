@@ -206,22 +206,43 @@ async def fail_on_nonexistent_subscription(
 
 def get_pairing(
     session: sqlalchemy.orm.Session,
-    interaction: discord.Interaction,
     user_1: discord.User | discord.Member,
-    user_2: discord.Member
+    user_2: discord.User | discord.Member,
+    user_3: Optional[discord.User | discord.Member]
 ) -> Optional[Pairing]:
-    return (
-        session.query(Pairing)
-        .filter(sqlalchemy.or_(
-            Pairing.user_1_id == user_1.id,
-            Pairing.user_2_id == user_1.id,
-        ))
-        .filter(sqlalchemy.or_(
-            Pairing.user_1_id == user_2.id,
-            Pairing.user_2_id == user_2.id,
-        ))
-        .one_or_none()
-    )
+    if user_3 is None:
+        return (
+            session.query(Pairing)
+            .filter(sqlalchemy.or_(
+                Pairing.user_1_id == user_1.id,
+                Pairing.user_2_id == user_1.id,
+            ))
+            .filter(sqlalchemy.or_(
+                Pairing.user_1_id == user_2.id,
+                Pairing.user_2_id == user_2.id,
+            ))
+            .one_or_none()
+        )
+    else:
+        return (
+            session.query(Pairing)
+            .filter(sqlalchemy.or_(
+                Pairing.user_1_id == user_1.id,
+                Pairing.user_2_id == user_1.id,
+                Pairing.user_3_id == user_1.id,
+            ))
+            .filter(sqlalchemy.or_(
+                Pairing.user_1_id == user_2.id,
+                Pairing.user_2_id == user_2.id,
+                Pairing.user_3_id == user_2.id,
+            ))
+            .filter(sqlalchemy.or_(
+                Pairing.user_1_id == user_3.id,
+                Pairing.user_2_id == user_3.id,
+                Pairing.user_3_id == user_3.id,
+            ))
+            .one_or_none()
+        )
 
 
 # Slash commands
@@ -263,7 +284,6 @@ async def _add_pairbot(interaction: discord.Interaction):
 
         await interaction.response.send_message(
             "Added Pairbot to \"#%s\"." % interaction.channel.name,
-            ephemeral=True,
         )
 
 
@@ -298,7 +318,6 @@ async def _remove_pairbot(interaction: discord.Interaction):
 
         await interaction.response.send_message(
             "Removed Pairbot from \"#%s\"." % interaction.channel.name,
-            ephemeral=True,
         )
 
 
@@ -315,7 +334,7 @@ async def _subscribe(
     assert isinstance(interaction.channel, discord.TextChannel)
 
     with Session.begin() as session:
-        if fail_on_inactive_channel(session, interaction):
+        if await fail_on_inactive_channel(session, interaction):
             return
 
         schedule = get_user_schedule(session, interaction)
@@ -325,7 +344,7 @@ async def _subscribe(
         else:
             app.logger.info("Found existing schedule")
 
-        if fail_on_existing_subscription(interaction, schedule, weekday):
+        if await fail_on_existing_subscription(interaction, schedule, weekday):
             return
 
         if weekday is not None:
@@ -357,7 +376,7 @@ async def _unsubscribe(
     assert isinstance(interaction.channel, discord.TextChannel)
 
     with Session.begin() as session:
-        if fail_on_inactive_channel(session, interaction):
+        if await fail_on_inactive_channel(session, interaction):
             return
 
         schedule = get_user_schedule(session, interaction)
@@ -369,13 +388,13 @@ async def _unsubscribe(
             )
             return
 
-        if fail_on_nonexistent_subscription(interaction, schedule, weekday):
+        if await fail_on_nonexistent_subscription(interaction, schedule, weekday):
             return
 
         if weekday is not None:
             schedule.set_availability_on(weekday, False)
             await interaction.response.send_message(
-                ("Successfully unsubscribed from pair programming on %s in #%s." % weekday, interaction.channel.name),
+                ("Successfully unsubscribed from pair programming on %s in #%s." % (weekday, interaction.channel.name)),
                 ephemeral=True
             )
         else:
@@ -400,12 +419,12 @@ async def _skip(
     assert isinstance(interaction.channel, discord.TextChannel)
 
     with Session.begin() as session:
-        if fail_on_inactive_channel(session, interaction):
+        if await fail_on_inactive_channel(session, interaction):
             return
 
         schedule = get_user_schedule(session, interaction)
 
-        if fail_on_nonexistent_subscription(interaction, schedule, None):
+        if await fail_on_nonexistent_subscription(interaction, schedule, None):
             return
 
         assert schedule is not None
@@ -431,7 +450,7 @@ async def _skip(
 
             skipped_weekday = Weekday(skipped_date.weekday())
 
-            if fail_on_nonexistent_subscription(interaction, schedule, skipped_weekday):
+            if await fail_on_nonexistent_subscription(interaction, schedule, skipped_weekday):
                 return
 
         skip = get_skip(session, interaction, skipped_date)
@@ -466,12 +485,12 @@ async def _unskip(
     assert isinstance(interaction.channel, discord.TextChannel)
 
     with Session.begin() as session:
-        if fail_on_inactive_channel(session, interaction):
+        if await fail_on_inactive_channel(session, interaction):
             return
 
         schedule = get_user_schedule(session, interaction)
 
-        if fail_on_nonexistent_subscription(interaction, schedule, None):
+        if await fail_on_nonexistent_subscription(interaction, schedule, None):
             return
         assert schedule is not None
 
@@ -496,7 +515,7 @@ async def _unskip(
 
             unskipped_weekday = Weekday(unskipped_date.weekday())
 
-            if fail_on_nonexistent_subscription(interaction, schedule, unskipped_weekday):
+            if await fail_on_nonexistent_subscription(interaction, schedule, unskipped_weekday):
                 return
 
         skip = get_skip(session, interaction, unskipped_date)
@@ -529,7 +548,7 @@ async def _view_schedule(
     assert isinstance(interaction.channel, discord.TextChannel)
 
     with Session.begin() as session:
-        if fail_on_inactive_channel(session, interaction):
+        if await fail_on_inactive_channel(session, interaction):
             return
 
         all_schedules = (
@@ -621,10 +640,10 @@ async def _pair_with(
         return
 
     with Session.begin() as session:
-        if fail_on_inactive_channel(session, interaction):
+        if await fail_on_inactive_channel(session, interaction):
             return
 
-        pairing = get_pairing(session, interaction, interaction.user, user)
+        pairing = get_pairing(session, interaction.user, user, None)
 
         usernames = sorted([user.name for user in (interaction.user, user)])
 
@@ -635,6 +654,7 @@ async def _pair_with(
             )
 
             pairing = Pairing(
+                thread_id=thread.id,
                 channel_id=interaction.channel_id,
                 user_1_id=interaction.user.id,
                 user_2_id=user.id,
@@ -651,6 +671,7 @@ async def _pair_with(
                 )
 
                 pairing = Pairing(
+                    thread_id=thread.id,
                     channel_id=interaction.channel_id,
                     user_1_id=interaction.user.id,
                     user_2_id=user.id,
@@ -662,6 +683,22 @@ async def _pair_with(
         )
     await interaction.response.send_message(
         f"Successfully created pairing thread with <@{user.id}>",
+        ephemeral=True
+    )
+
+
+@app.command(
+    name="makegroups",
+    description="Assign random groups to people subscribed to pairing today."
+)
+@discord.app_commands.guild_only()
+@discord.app_commands.checks.has_permissions(administrator=True)
+async def _make_groups(
+    interaction: discord.Interaction[Any]
+):
+    await make_groups()
+    await interaction.response.send_message(
+        f"Great success!! :-)",
         ephemeral=True
     )
 
@@ -719,31 +756,54 @@ async def make_groups():
                     groups.append(pair)
 
                 for group in groups:
-                    usernames = sorted([user.name for user in group])
+                    usernames = sorted([user.name for user in group if user is not None])
                     user1, user2, user3 = group
 
-                    # TODO find existing pairing and get thread
-                    pairing = Pairing(
-                        channel_id=channel.id,
-                        user_1_id=user1.id,
-                        user_2_id=user2.id,
-                        user_3_id=user3.id if user3 is not None else None,
-                    )
-                    session.add(pairing)
+                    pairing = get_pairing(session, user1, user2, user3)
 
-                    # Make new discord thread
-                    thread = await channel.create_thread(
-                        name=" & ".join(usernames)
-                    )
+                    if pairing is None:
+                        # Make new discord thread
+                        thread = await channel.create_thread(
+                            name=" & ".join(usernames)
+                        )
 
-                    await thread.send(
-                        " ".join("<@%d>" % (user.id for user in group if user is not None))
-                    )
-                    await thread.send(
-                        "You have been matched together. Happy pairing! :computer:"
-                    )
+                        pairing = Pairing(
+                            thread_id=thread.id,
+                            channel_id=channel.id,
+                            user_1_id=user1.id,
+                            user_2_id=user2.id,
+                            user_3_id=user3.id if user3 is not None else None,
+                        )
+                        session.add(pairing)
+                    else:
+                        thread = guild.get_thread(pairing.thread_id)
+                        if thread is None:
+                            # Thread deleted somehow. Start over
+                            session.delete(pairing)
 
-                app.logger.info("Send out pairings.")
+                            # Make new discord thread
+                            thread = await channel.create_thread(
+                                name=" & ".join(usernames)
+                            )
+
+                            pairing = Pairing(
+                                thread_id=thread.id,
+                                channel_id=channel.id,
+                                user_1_id=user1.id,
+                                user_2_id=user2.id,
+                                user_3_id=user3.id if user3 is not None else None,
+                            )
+                            session.add(pairing)
+
+                    msg = ", ".join(("<@%d>" % user.id) for user in group if user is not None)
+                    msg += ": "
+                    msg += "You have been matched together. Happy pairing! :computer:"
+
+                    await thread.send(msg)
+
+                    app.logger.info(
+                        "Made pairing group with %s" % " & ".join(usernames)
+                    )
 
 
 def run():

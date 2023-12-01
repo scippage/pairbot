@@ -85,9 +85,9 @@ class DiscordApp:
                     " }"
                     if len(kwargs) > 0 else " with no arguments"
                 )
-                self.logger.info("Executing slash command /%s%s", i.command.name, pretty_kwargs)
                 try:
                     with InteractionContext(i):
+                        self.logger.info("Executing slash command /%s%s", i.command.name, pretty_kwargs)
                         await callback(i, *args, **kwargs)
                 except Exception as e:
                     self.logger.error(e, exc_info=True)
