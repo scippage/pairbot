@@ -19,7 +19,8 @@ from typing import (
 import sqlalchemy
 from sqlalchemy import (
     create_engine,
-    func
+    func,
+    or_,
 )
 import sqlalchemy.orm
 from sqlalchemy.orm import (
@@ -44,7 +45,7 @@ from .models import (
     PairingChannel,
     Schedule,
     ScheduleAdjustment,
-    Thread,
+    Pairing,
 )
 
 logger = logging.getLogger(__name__)
@@ -668,7 +669,74 @@ async def _pair_with(
     interaction: discord.Interaction,
     user: discord.Member,
 ):
-    await interaction.response.send_message("Works", ephemeral=True)
+    assert interaction.guild is not None
+    assert isinstance(interaction.channel, discord.TextChannel)
+
+    if user.id == interaction.user.id:
+        await interaction.response.send_message(
+            f"You cannot pair with yourself.",
+            ephemeral=True
+        )
+        return
+
+    session = client.make_orm_session()
+    with session.begin():
+        pairing = (
+            session.query(Pairing)
+            .filter(or_(
+                Pairing.user_1_id == interaction.user.id,
+                Pairing.user_2_id == interaction.user.id,
+            ))
+            .filter(or_(
+                Pairing.user_1_id == user.id,
+                Pairing.user_2_id == user.id,
+            ))
+            .one_or_none()
+        )
+
+        usernames = sorted([user.name for user in (interaction.user, user)])
+
+        if pairing is None:
+            # Make new discord thread
+            thread = await interaction.channel.create_thread(
+                name=f"{usernames[0]} & {usernames[1]}",
+            )
+
+            pairing = Pairing(
+                channel_id=interaction.channel.id,
+                thread_id=thread.id,
+                user_1_id=interaction.user.id,
+                user_2_id=user.id,
+            )
+            session.add(pairing)
+            session.commit()
+        else:
+            thread = interaction.guild.get_thread(pairing.thread_id)
+            if thread is None:
+                session.delete(pairing)
+                session.commit()
+
+                # Make new discord thread
+                thread = await interaction.channel.create_thread(
+                    name=f"{usernames[0]} & {usernames[1]}",
+                )
+
+                pairing = Pairing(
+                    channel_id=interaction.channel.id,
+                    thread_id=thread.id,
+                    user_1_id=interaction.user.id,
+                    user_2_id=user.id,
+                )
+                session.add(pairing)
+                session.commit()
+
+        await thread.send(
+            f"<@{interaction.user.id}> has started a pairing session with you, <@{user.id}>. Happy pairing! :computer:"
+        )
+    await interaction.response.send_message(
+        f"Successfully created pairing thread with <@{user.id}>",
+        ephemeral=True
+    )
 
 
 @discord.ext.tasks.loop(time=config.PAIRING_TIME)

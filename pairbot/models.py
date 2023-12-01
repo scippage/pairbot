@@ -6,10 +6,14 @@ import calendar
 import enum
 from datetime import datetime
 
+from typing import (
+    Optional,
+    Union,
+)
+
 from sqlalchemy import (
     PrimaryKeyConstraint,
     Boolean,
-    Column,
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -31,9 +35,6 @@ class PairingChannel(Base):
 
     channel_id: Mapped[int]
     """The Discord channel ID."""
-
-    active: Mapped[bool]
-    """Whether Pairbot is active in the channel."""
 
     leetcode_integration: Mapped[bool]
     """Whether leetcode integration is active in the channel or not."""
@@ -67,32 +68,43 @@ class Schedule(Base):
     user_id: Mapped[int]
     """The Discord user ID."""
 
-    available_Monday: Mapped[bool] = mapped_column(Boolean, default=False)
-    available_Tuesday: Mapped[bool] = mapped_column(Boolean, default=False)
-    available_Wednesday: Mapped[bool] = mapped_column(Boolean, default=False)
-    available_Thursday: Mapped[bool] = mapped_column(Boolean, default=False)
-    available_Friday: Mapped[bool] = mapped_column(Boolean, default=False)
-    available_Saturday: Mapped[bool] = mapped_column(Boolean, default=False)
-    available_Sunday: Mapped[bool] = mapped_column(Boolean, default=False)
+    available_0: Mapped[bool] = mapped_column(Boolean, default=False)
+    available_1: Mapped[bool] = mapped_column(Boolean, default=False)
+    available_2: Mapped[bool] = mapped_column(Boolean, default=False)
+    available_3: Mapped[bool] = mapped_column(Boolean, default=False)
+    available_4: Mapped[bool] = mapped_column(Boolean, default=False)
+    available_5: Mapped[bool] = mapped_column(Boolean, default=False)
+    available_6: Mapped[bool] = mapped_column(Boolean, default=False)
 
     __table_args__ = (
         PrimaryKeyConstraint("channel_id", "user_id"),
     )
 
-    # hack to get Schedule[day_of_week] to work
-    def __getitem__(self, day_of_week: Weekday):
-        return getattr(self, f"available_{day_of_week}")
+    # Utility methods
 
-    def __setitem__(self, day_of_week: Weekday, value: bool):
-        setattr(self, f"available_{day_of_week}", value)
+    def is_available_on(self, day_of_week: Weekday) -> bool:
+        return getattr(self, f"available_{int(day_of_week)}")
 
-    @property
-    def days_available(self):
-        return [day for day in Weekday if self[day] == True]
+    def set_availability_on(self, day_of_week: Weekday, value: bool):
+        setattr(self, f"available_{int(day_of_week)}", value)
 
-class ScheduleAdjustment(Base):
+    def set_availability_every_day(self, value: bool):
+        for day in Weekday:
+            self.set_availability_on(day, value)
+
+    def days_available(self) -> list[Weekday]:
+        return [day for day in Weekday if self.is_available_on(day)]
+
+    def days_unavailable(self) -> list[Weekday]:
+        return [day for day in Weekday if not self.is_available_on(day)]
+
+    def num_days_available(self) -> int:
+        return sum(1 for day in Weekday if self.is_available_on(day))
+
+
+class Skip(Base):
     """Represents an adjustment to a user's availability on a specific date."""
-    __tablename__ = "schedule_adjustment"
+    __tablename__ = "skip"
 
     channel_id: Mapped[int]
     """The Discord channel ID."""
@@ -103,16 +115,13 @@ class ScheduleAdjustment(Base):
     date: Mapped[datetime]
     """The date on which the user's availability is set."""
 
-    available: Mapped[bool]
-    """Whether the user is available on this date."""
-
     __table_args__ = (
         PrimaryKeyConstraint("channel_id", "user_id", "date"),
     )
 
 
-class Thread(Base):
-    """Represents a user's membership in a Discord thread created by Pairbot."""
+class Pairing(Base):
+    """Represents a Discord thread created by Pairbot."""
     __tablename__ = "pairing"
 
     channel_id: Mapped[int]
@@ -121,9 +130,15 @@ class Thread(Base):
     thread_id: Mapped[int]
     """The Discord thread ID"""
 
-    user_id: Mapped[int]
-    """The Discord user ID."""
+    user_1_id: Mapped[int]
+    """The first Discord user ID."""
+
+    user_2_id: Mapped[int]
+    """The second Discord user ID."""
+
+    user_3_id: Mapped[Optional[int]]
+    """The third Discord user ID."""
 
     __table_args__ = (
-        PrimaryKeyConstraint("channel_id", "thread_id", "user_id"),
+        PrimaryKeyConstraint("channel_id", "thread_id"),
     )
